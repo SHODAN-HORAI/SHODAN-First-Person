@@ -2,7 +2,7 @@
 -- HD2-Requires: chef-shared-loader
 -- SHODAN First Person: a first person camera with its own settings panel.
 local chef = ...
-local M = { version = '0.3.147' }
+local M = { version = '1.0.0' }
 local log = chef.log
 -- chef.call doesn't refuse a unit destroyed in this world (a swapped helmet): asking one ends the game
 local function call(name, a, b, ...)
