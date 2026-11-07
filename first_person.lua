@@ -906,21 +906,57 @@ local function refresh_cams()
   once('cams' .. #cams, 'camera units: %d', #cams)
 end
 
+-- multiplayer: your own Helldiver only ever changes by coming down in a hellpod, with the game camera falling along.
+-- Any other Helldiver than the one you had (S.mine) is a teammate the camera follows (joining, spectating after a
+-- death) unless a drop was just seen; each drop allows one pick. The game's
+-- network session gives no unit owners (2026-11-07 log)
+local function drop_seen() return S.drop_t and S.t - S.drop_t < 30 end
+local function others_here() return chef.in_mission() and (chef.players and chef.players() or 1) > 1 end
+
 -- the end of a scan, all in one frame on the few units near the view: the Helldiver whose head is nearest, and the
 -- pieces worn on him (the same spot of the same bone)
 local function scan_done(near)
   local c = chef.camera()
   if not c then return end
   local best, bd = nil, 6
+  local gate = others_here() and not drop_seen()
+  -- right after your drop: your Helldiver is the one that came down with the pod (30+ m below its highest point;
+  -- it exists from the mission load, 2026-11-07 log), so a teammate standing where you land is never taken. None
+  -- fell = nearest, as before
+  local function fell(h) return h.z and S.avtop[h.u] and S.avtop[h.u] - h.z > 30 end
+  local fresh = nil
+  if others_here() and drop_seen() then
+    for _, h in ipairs(near) do
+      h.x, h.y, h.z = chef.unit_position(h.u, h.node)
+      if h.bone == 'head' and h.kind == AVATAR_KIND and h.u ~= S.mine and fell(h) then fresh = true end
+    end
+  end
   for _, h in ipairs(near) do
     h.x, h.y, h.z = chef.unit_position(h.u, h.node)
-    if h.x and h.bone == 'head' and h.kind == AVATAR_KIND and h.u ~= S.corpse then  -- never back into a dead body
+    local teammate = gate and h.u ~= S.mine
+    if teammate and h.bone == 'head' and h.kind == AVATAR_KIND then
+      once('podwait' .. tostring(h.u), 'a teammate near the camera: waiting for your hellpod (%d players, fastest camera fall so far %.0f m/s)',
+        chef.players(), S.fall_max or 0)
+    end
+    if fresh and not fell(h) then teammate = true end
+    if h.x and h.bone == 'head' and h.kind == AVATAR_KIND and h.u ~= S.corpse and not teammate then  -- never back into a dead body
       local d = sqrt((h.x - c.x) ^ 2 + (h.y - c.y) ^ 2 + (h.z - c.z) ^ 2)
-      if d < bd then best, bd = h, d end
+      -- several pods at once (a group reinforcement): the one the camera followed down most wins, then the nearest
+      local f = fresh and (S.avfollow[h.u] or 0) or 0
+      h.f = f
+      if d < 6 and (not best or f > best.f or f == best.f and d < bd) then best, bd = h, d end
     end
   end
   if not best then S.head, S.parts = nil, {}; return end
   if not (S.head and S.head.u == best.u) then
+    if best.u ~= S.mine and others_here() then
+      log('your hellpod came down: taking that Helldiver (%s, came down %.0f m, followed by the camera %d times)',
+        fresh and 'the one that fell' or 'nearest, none fell', S.avtop[best.u] and best.z and S.avtop[best.u] - best.z or 0,
+        S.avfollow[best.u] or 0)
+      S.avfollow = {}
+      S.drop_t = nil
+    end
+    S.mine = best.u
     S.head = { u = best.u, node = best.node, root = chef.unit_node(best.u, 'root') or 1 }
     S.hmax, S.stance, S.down, S.rising, S.pidle = nil, nil, false, false, nil
     S.rescans = { S.t + 5, S.t + 15 }                -- pieces that load late
@@ -957,6 +993,7 @@ local function start_scan(w)
   if type(list) ~= 'table' then return end
   S.last_scan = S.t
   local near = {}
+  local follow, fd = nil, 1e9  -- during a drop: the Helldiver nearest the falling camera (your pod: it chases it)
   S.scan = true
   local job = chef.spread(list, 1000, function(u)
     local k = chef.unit_kind(u)
@@ -978,10 +1015,19 @@ local function start_scan(w)
     if not b then return end
     local c = chef.camera()
     local x, y, z = chef.unit_position(u)
+    if k == AVATAR_KIND and z and z > (S.avtop[u] or -1e9) then S.avtop[u] = z end  -- each Helldiver's highest point, anywhere
+    if k == AVATAR_KIND and c and x and (S.fall_t or 0) > 0 then
+      local d = (x - c.x) ^ 2 + (y - c.y) ^ 2 + (z - c.z) ^ 2
+      if d < fd then follow, fd = u, d end
+    end
     if c and x and (x - c.x) ^ 2 + (y - c.y) ^ 2 + (z - c.z) ^ 2 < 100 then
       near[#near + 1] = { u = u, kind = k, bone = b.bone, node = b.node, gear = b.gear }
     end
-  end, function(ok) S.scan = nil; if ok then scan_done(near) end end)
+  end, function(ok)
+    S.scan = nil
+    if follow then S.avfollow[follow] = (S.avfollow[follow] or 0) + 1 end
+    if ok then scan_done(near) end
+  end)
   if S.scan then S.scan = job end  -- unless it already finished
 end
 
@@ -998,14 +1044,21 @@ local function check_player(w)
       local x, y, z = chef.unit_position(h.u, h.node)
       lost = not x or (not ours and not S.galaxy and c and (x - c.x) ^ 2 + (y - c.y) ^ 2 + (z - c.z) ^ 2 > 36)
     end
-    if lost then if S.dead or S.down_any then S.corpse = h.u end; S.head, S.parts = nil, {} end
+    if lost then
+      if S.dead or S.down_any then
+        S.corpse = h.u
+      end
+      S.head, S.parts = nil, {}
+    end
   end
   -- a piece swapped out (new helmet or armour): drop it and look for the new one soon
   local live = {}
   for _, p in ipairs(S.parts) do if chef.unit_alive(p.u) then live[#live + 1] = p end end
   if #live < #S.parts then S.parts = live; table.insert(S.rescans, 1, S.t + 1) end
   if not S.head then
-    if not S.last_scan or S.t - S.last_scan >= 3 then start_scan(w) end
+    -- right after your hellpod is seen: look every half second, so first person comes on as it lands
+    local every = drop_seen() and 0.5 or 3
+    if not S.last_scan or S.t - S.last_scan >= every then start_scan(w) end
   elseif S.rescans[1] and S.t >= S.rescans[1] then
     table.remove(S.rescans, 1); start_scan(w)
   end
@@ -2436,8 +2489,21 @@ function M.update(dt)
     S.act, S.down, S.stance, S.hmax, S.fv = false, false, nil, nil, nil
     S.mech, S.frv, S.empl, S.tank, S.tpass = false, false, false, false, false
     S.dead, S.corpse, S.avs, S.av_gen, S.dgen, S.dcams, S.dkx = false, nil, nil, nil, nil, nil, nil
+    S.mine, S.drop_t, S.fall_t, S.lcz, S.fall_max, S.avtop, S.avfollow = nil, nil, 0, nil, 0, {}, {}
   end
   S.t = S.t + dt
+  -- the game camera falling 12+ m/s for 0.25 s = a hellpod coming down (a single-frame jump is a camera cut)
+  local gc = chef.camera()
+  if gc and S.lcz and dt > 0 and dt < 0.1 then
+    local vz = (gc.z - S.lcz) / dt
+    if vz < 0 then S.fall_max = max(S.fall_max or 0, -vz < 150 and -vz or 0) end
+    S.fall_t = (vz < -12 and vz > -150) and (S.fall_t or 0) + dt or 0
+    if S.fall_t >= 0.25 and not drop_seen() then
+      S.drop_t = S.t
+      if others_here() then log('hellpod drop seen (game camera falling %.0f m/s)', -vz) end
+    end
+  end
+  S.lcz = gc and gc.z
   refresh_cams()
   S.look = S.look - dt
   if S.look <= 0 then S.look = 0.5; check_player(w); apply_hiding() end
