@@ -2421,6 +2421,8 @@ function M.update(dt)
     S.frv_over = over and (S.frv_over or 0) + 1 or 0
     local gun = over and FRV_GUN[it.kind] and S.frv_over >= 2
     if over and not gun and not S.frv then it = nil end
+    -- diving or lying next to a car can put the head inside its box: only a seat animation counts then
+    if it and S.diving and not S.frv and not FRV_ANIM[seat_anim()] then it = nil end
     if it then S.frv = frv_seat(it, x, y, z, gun)
     else
       it = frv_near()
