@@ -1917,8 +1917,8 @@ local function pod_check(dt)
       S.podspots = {}
       for a, b in tostring(chef.load('pod_spots', '')):gmatch('(-?[%d.]+),(-?[%d.]+)') do S.podspots[#S.podspots + 1] = { tonumber(a), tonumber(b) } end
     end
-    local sp = S.prx and dt > 0 and sqrt((rx - S.prx) ^ 2 + (ry - S.pry) ^ 2) / dt or 0
-    S.prx, S.pry = rx, ry
+    local sp = S.pod_rx and dt > 0 and sqrt((rx - S.pod_rx) ^ 2 + (ry - S.pod_ry) ^ 2) / dt or 0
+    S.pod_rx, S.pod_ry = rx, ry
     local keys = false
     for _, kn in ipairs({ 'w', 'a', 's', 'd', 'up', 'down', 'left', 'right' }) do if chef.key_down(kn) then keys = true end end
     local near = false
