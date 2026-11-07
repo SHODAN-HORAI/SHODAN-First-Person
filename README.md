@@ -29,7 +29,7 @@ and how the game's map and stratagem keys behave.
 
 | Tab | What you can change |
 |---|---|
-| Camera | Camera position, field of view, aiming field of view, smoothing, profiles, and when to switch to third person (galactic map, hellpod, map and stratagem menu) |
+| Camera | Camera position, field of view, aiming field of view, smoothing, profiles, and when to switch to third person (galactic map, hellpod, mission terminals, map and stratagem menu) |
 | Aim | Crosshair follows the gun: keeps your shots where the crosshair points, while aiming and from the hip |
 | Stance | Its own camera position and field of view when crouched or prone, and how the view behaves when diving, lying down, knocked down and getting up |
 | Meshes | Hide any part of your helldiver from view, the guns in hand or on your back, and armour while scoped |

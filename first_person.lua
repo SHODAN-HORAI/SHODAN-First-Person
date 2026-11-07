@@ -2,7 +2,7 @@
 -- HD2-Requires: chef-shared-loader
 -- SHODAN First Person: a first person camera with its own settings panel.
 local chef = ...
-local M = { version = '1.0.0' }
+local M = { version = '1.0.1' }
 local log = chef.log
 -- chef.call doesn't refuse a unit destroyed in this world (a swapped helmet): asking one ends the game
 local function call(name, a, b, ...)
@@ -80,6 +80,8 @@ local TABS = {
       hint = 'Switches to the game camera while you use the galactic map.' },
     { id = 'tp_pod', label = 'Third person in the hellpod', toggle = true, def = true,
       hint = 'Switches to the game camera when you climb into the hellpod on the ship, and in the drop until you step out of the pod.' },
+    { id = 'tp_term', label = 'Third person at terminals', toggle = true, def = true,
+      hint = 'Switches to the game camera while you use a mission terminal, and back when you step off it.' },
     { id = 'messages', label = 'On-screen messages', toggle = true, def = true, global = true,
       hint = 'Shows FIRST PERSON ON or OFF and the profile number for a moment when you press their keys.' },
     { id = 'tp_menus', label = 'Third person for map and stratagems', toggle = true, def = false,
@@ -419,7 +421,9 @@ local S = { on = false, cams = {}, head = nil, look = 0, frv_t = 0, said = {}, p
 -- the diver's animation state, only while the body still has its animation: asking a dead body whose animation the
 -- game has torn down crashed the game a few seconds after every death (2026-11-07).
 -- No animation left = dead: the game's view from then on (S.dead)
-local function anim(u)
+local UnitApi = rawget(_G, 'Unit') or rawget(_G, 'stingray') and stingray.Unit
+-- all = every layer's state: chef.call passes on only the first 4, so the engine is called straight (same guards)
+local function anim(u, all)
   if not u then return nil end
   if S.down_any and chef.in_mission() and (S.atrace or 0) <= S.t then S.atrace = S.t + 0.5; log('asking the animation while down') end
   local has, why = call('Unit.has_animation_state_machine', u)
@@ -429,6 +433,7 @@ local function anim(u)
   end
   -- the check itself refused: still never ask a body that's down
   if has == nil then if not S.said.asm then S.said.asm = true; log('animation check unavailable: %s', tostring(why)) end; if S.down_any then return nil end end
+  if all and has == true and UnitApi and UnitApi.animation_get_state and chef.unit_alive(u) then return UnitApi.animation_get_state(u) end
   return call('Unit.animation_get_state', u)
 end
 local frv_watch = chef.watch and chef.watch(FRV_KINDS, 2) or nil
@@ -1878,6 +1883,22 @@ local function galaxy_check(dt)
   end
 end
 
+-- mission terminals: the Helldiver state machine plays its own states on layer 8 (the 9th value of
+-- Unit.animation_get_state): 252 step on, 254 standing at it, 255-265 the key inputs, 253 stepping off
+-- (in-game log 2026-11-07, matches the avatar_helldiver state machine)
+local TERM_STATES = {}
+for i = 252, 265 do TERM_STATES[i] = i ~= 253 end
+local function term_check()
+  local h = S.head
+  if not (h and chef.in_mission()) then S.term = false; return end
+  local st = { anim(h.u, true) }
+  local at = TERM_STATES[st[9]] or false
+  if at ~= (S.term or false) then
+    S.term = at
+    log('terminal %s', at and 'in use' or 'left')
+  end
+end
+
 -- hellpod. Ship: climbing in plays a cutscene whose camera sits well away from your head (normal third person is
 -- about 2 m behind it), so hand over while the game's camera is over 3.5 m from the head. That camera only comes
 -- 1.3 s after you duck in (log 2026-11-07): the head drops to prone height first (0.74 m), and nothing else on the
@@ -2034,6 +2055,7 @@ local function update_act()
   elseif binds.peek and binds.peek.down() and not S.panel then why = 'peek key'
   elseif V.tp_galaxy and S.galaxy then why = 'galactic map'
   elseif V.tp_pod and (S.pod or S.cine or S.plock or S.pship) then why = 'hellpod'  -- user: the game's own view from pressing E on a pod
+  elseif V.tp_term and S.term then why = 'terminal'
   elseif V.tp_menus and S.map_open then why = 'map'
   elseif V.tp_menus and S.strat_open then why = 'stratagems'
   elseif V.tp_down and S.down and not S.pship and not S.plock and not (S.frv or S.mech or S.empl or S.tank) then why = 'knocked down'  -- seats look like lying down
@@ -2473,6 +2495,7 @@ function M.update(dt)
   death_check()
   if S.on and S.head then target(dt) end
   if S.on and V.tp_galaxy then galaxy_check(dt) else S.galaxy = false end   -- every frame: the head shows at once
+  if S.on and V.tp_term then term_check() else S.term = false end
   S.mmove = 0
   if S.on and V.tp_pod then pod_check(dt) else S.pod, S.cine, S.pship, S.plock = false, false, false, false end
   menu_keys()
