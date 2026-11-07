@@ -344,6 +344,12 @@ local MY_DEF = { frv_fwd = 0.04, frv_side = -0.01, frv_up = 0.03, frvp_fwd = -0.
   fl_frv_fwd = -0.17, fl_frv_up = -0.06, fl_frvg_fwd = -0.04, fl_frvg_up = 0.2, fl_frvp_fwd = -0.18, fl_frvp_side = -0.5,
   fl_frvp_up = -0.19, sp_frv_side = -0.01, sp_frv_up = 0.06, sp_frvg_fwd = 0.01, sp_frvp_fwd = 0.01, sp_frvp_up = -0.01,
   empl_fov = 80, empl_up = 0.25, mech_fov = 80, tp_mech = false }
+-- immersive mode paused (user, 2026-11-07): tab + free look key hidden, V.imm_on stays nil so neck() never runs
+for i = #TABS, 1, -1 do
+  local t = TABS[i]
+  if t.name == 'IMMERSE' then table.remove(TABS, i) end
+  for j = #t.rows, 1, -1 do if t.rows[j].id == 'freelook' then table.remove(t.rows, j) end end
+end
 local binds = {}
 for _, tab in ipairs(TABS) do
   for _, r in ipairs(tab.rows) do
