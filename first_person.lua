@@ -1097,7 +1097,8 @@ local function inside(watch, top, cur)
   local x, y, z = chef.unit_position(S.head.u, S.head.node)
   if not x then return false end
   for _, it in ipairs(watch.items) do
-    if abs(it.x - x) + abs(it.y - y) < 8 and (settled(it) or it.unit == cur) then
+    -- the car you sit in skips the distance check: the watch's position is up to 2 s old, a car driving off leaves it
+    if it.unit == cur or (abs(it.x - x) + abs(it.y - y) < 8 and settled(it)) then
       local from = { x = x, y = y, z = z }
       local ux, uy, uz = xyz(call('Quaternion.up', call('Unit.world_rotation', it.unit, 1)))
       if not ux then ux, uy, uz = 0, 0, 1 end
@@ -1121,7 +1122,7 @@ local function seat_anim()
   if not S.head then return nil end
   local x, y = chef.unit_position(S.head.u, S.head.node)
   if not x then return nil end
-  local near = false
+  local near = S.frv_u ~= nil  -- the car you sit in counts as near however old the watch's position is
   for _, w in ipairs({ frv_watch, tank_watch }) do
     for _, it in ipairs(w and w.items or {}) do if abs(it.x - x) + abs(it.y - y) < 8 then near = true end end
   end
