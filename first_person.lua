@@ -342,7 +342,7 @@ end
 -- the user's tuned values as defaults for vehicle rows, per model copy (copies otherwise take the base row's own default)
 local MY_DEF = { frv_fwd = 0.08, frv_up = -0.08, frv_side = 0, frvp_fwd = 0, frvp_up = 0, frvp_side = 0, sp_frv_fwd = 0.08, sp_frv_up = -0.08, sp_frv_side = 0, sp_frvp_fwd = 0, sp_frvp_up = 0, sp_frvp_side = 0, fl_frv_fwd = 0.08, fl_frv_up = -0.08, fl_frv_side = 0, fl_frvp_fwd = 0, fl_frvp_up = 0, fl_frvp_side = 0, se_frv_fwd = 0.08, se_frv_up = -0.08, se_frv_side = 0, se_frvp_fwd = 0, se_frvp_up = 0, se_frvp_side = 0, frvg_fwd = 0, frvg_up = 0.06, frvg_side = 0, fl_frvg_fwd = 0, fl_frvg_up = 0.06, fl_frvg_side = 0,
   se_frvg_fwd = 0, se_frvg_up = 0.06, se_frvg_side = 0,
-  empl_fov = 80, empl_up = 0.25, mech_fov = 80, tp_mech = false }
+  empl_fov = 80, empl_up = 0.25 }
 -- immersive mode paused (user, 2026-11-07): tab + free look key hidden, V.imm_on stays nil so neck() never runs
 for i = #TABS, 1, -1 do
   local t = TABS[i]
