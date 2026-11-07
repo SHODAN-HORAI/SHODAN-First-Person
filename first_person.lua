@@ -342,7 +342,7 @@ end
 -- the user's tuned values as defaults for vehicle rows, per model copy (copies otherwise take the base row's own default)
 local MY_DEF = { frv_fwd = 0.08, frv_up = -0.08, frv_side = 0, frvp_fwd = 0, frvp_up = 0, frvp_side = 0, sp_frv_fwd = 0.08, sp_frv_up = -0.08, sp_frv_side = 0, sp_frvp_fwd = 0, sp_frvp_up = 0, sp_frvp_side = 0, fl_frv_fwd = 0.08, fl_frv_up = -0.08, fl_frv_side = 0, fl_frvp_fwd = 0, fl_frvp_up = 0, fl_frvp_side = 0, se_frv_fwd = 0.08, se_frv_up = -0.08, se_frv_side = 0, se_frvp_fwd = 0, se_frvp_up = 0, se_frvp_side = 0, frvg_fwd = 0, frvg_up = 0.06, frvg_side = 0, fl_frvg_fwd = 0, fl_frvg_up = 0.06, fl_frvg_side = 0,
   se_frvg_fwd = 0, se_frvg_up = 0.06, se_frvg_side = 0,
-  empl_fov = 80, empl_up = 0.25 }
+  tp_empl = false, at_tp_empl = false, empl_up = 0.15 }
 -- immersive mode paused (user, 2026-11-07): tab + free look key hidden, V.imm_on stays nil so neck() never runs
 for i = #TABS, 1, -1 do
   local t = TABS[i]
@@ -745,19 +745,28 @@ local gun_watch = chef.watch and chef.watch(GUN_KINDS, 1) or nil
 -- where the diver carries each kind of gun when it isn't in a hand
 local SLOTS = { primary = { 'sling' }, secondary = { 'pistol' }, support = { 'support_mg', 'support' } }
 local function dist(a, b) return (a and b) and sqrt((a[1] - b[1]) ^ 2 + (a[2] - b[2]) ^ 2 + (a[3] - b[3]) ^ 2) or 9 end
+-- bone indices and which meshes a unit has never change for that unit: asked once (weak keys, gone with the unit)
+local node_ix, has_m = setmetatable({}, { __mode = 'k' }), setmetatable({}, { __mode = 'k' })
 local function node_at(u, name)
-  local i = chef.unit_node(u, name)
+  local c = node_ix[u] or {}
+  node_ix[u] = c
+  if c[name] == nil then c[name] = chef.unit_node(u, name) or false end
+  local i = c[name]
   if i then local x, y, z = chef.unit_position(u, i); if x then return { x, y, z } end end
 end
 -- a mesh by name, or by its 8-digit hash when the name is unknown (a fresh engine key each time, never kept)
 local function mesh_key(u, m)
+  local c = has_m[u] or {}
+  has_m[u] = c
+  if c[m] == false then return end
   local key = m
   if #m == 8 and m:match('^%x+$') then
     local k, why = chef.call('IdString32.from_hex', m)
     if why or k == nil then once('idhex', 'unnamed gun meshes left alone: %s', tostring(why)); return end
     key = k
   end
-  if call('Unit.has_mesh', u, key) == true then return key end
+  if c[m] == nil then c[m] = call('Unit.has_mesh', u, key) == true end
+  if c[m] then return key end
 end
 local function gun_meshes(u, list, on)
   local h = S.ghid[u]
@@ -1118,6 +1127,9 @@ end
 -- each round (105/106, then 109/110), so a head over the car with any other animation is the passenger seat
 local FRV_ANIM = { [108] = 'driver', [112] = 'passenger', [104] = 'gunner' }
 local function seat_anim()
+  -- asked once per update: the animation can't change within one
+  if S.sa_t == S.t then return S.sa end
+  S.sa_t, S.sa = S.t, nil
   -- only next to a car or tank: no animation question anywhere else (see anim)
   if not S.head then return nil end
   local x, y = chef.unit_position(S.head.u, S.head.node)
@@ -1128,7 +1140,8 @@ local function seat_anim()
   end
   if not near then return nil end
   local a = anim(S.head.u)
-  return type(a) == 'number' and a or nil
+  S.sa = type(a) == 'number' and a or nil
+  return S.sa
 end
 local function frv_seat(it, x, y, z, gun)
   local anim = seat_anim()
@@ -1530,7 +1543,7 @@ local function aim_fix(k, cam, dt)
   local dx, dy, dz = xyz(call('Quaternion.forward', base))
   local on = V.aim_fix and (S.aim or V.aim_hip) and dx and S.gcx and k.wx
   local D, src
-  if on then
+  if on and not S.draw then
     -- fixed distance unless aim_range (aiming) or hip_range (hip; enemy ranging there turned the view far too hard, 0.3.109)
     local raw, u, _
     if (S.aim and V.aim_range) or (not S.aim and V.hip_range) then raw, _, u = aim_range({ S.gcx, S.gcy, S.gcz }, dx, dy, dz) end
@@ -1693,12 +1706,6 @@ local function neck(w)
     local _, why = call('Unit.set_local_rotation', u, 1, q)
     if why then once('nk' .. tostring(why), 'neck: body turn refused: %s', tostring(why))
     else call('World.update_unit', w, u); n.want = math.deg(t); n.writes = (n.writes or 0) + 1 end
-  end
-  if S.t >= (n.plog or 0) then
-    n.plog = S.t + 0.25
-    log('neck probe: view %.0f body %.0f head off %.0f (limit %.0f)%s | writes %d kept %d last off %.1f | %s anim %s | speed %.1f%s',
-      vy, by_, d, lim, n.want and ' TURNING' or '', n.writes or 0, n.kept or 0, n.lastoff or -1, S.stance or 'stand', tostring(anim(u)),
-      spd, (n.run and ' RUNNING' or '') .. (fl and string.format(' FREE LOOK held %d, at draw %d/%d', n.flk or 0, n.rk or 0, n.rn or 0) or ''))
   end
 end
 
@@ -2490,7 +2497,12 @@ end
 
 function M.render()
   local w = chef.world()
-  if w then hold_body(w, true); place(w) end
+  if not w then return end
+  hold_body(w, true)
+  -- the draw pass puts the camera back (the game moves it between update and draw every frame, 1.0.1 log): no easing (it ran twice as fast with both passes) and no enemy ranging
+  S.dt, S.draw = 0, true
+  place(w)
+  S.draw = nil
 end
 
 function M.on_stop()
