@@ -2,7 +2,7 @@
 -- HD2-Requires: chef-shared-loader
 -- SHODAN First Person: a first person camera with its own settings panel.
 local chef = ...
-local M = { version = '0.3.146' }
+local M = { version = '0.3.147' }
 local log = chef.log
 -- chef.call doesn't refuse a unit destroyed in this world (a swapped helmet): asking one ends the game
 local function call(name, a, b, ...)
@@ -1767,7 +1767,15 @@ local function place(w)
       local d = sqrt((cx - hx) ^ 2 + (cy - hy) ^ 2 + (cz - hz) ^ 2)
       k.gp = { cx, cy, cz }  -- the game's own spot, put back at a hand-off
       if k.wx and not k.main then k.main = true; log('camera %d is the game view camera', ci) end
-      state = d < 0.4 and 'scope' or d > 8 and 'far' or 'ours'
+      -- a scope sits in front of the eye; a third-person camera squeezed in by the ground (aiming on your back,
+      -- looking sideways) comes from behind the head and flipped scope/ours every few frames (clip 2026-11-07)
+      local al = 1
+      if d < 0.4 then
+        local fx, fy, fz = xyz(call('Quaternion.forward', call('Camera.local_rotation', cam)))
+        if fx then al = (cx - hx) * fx + (cy - hy) * fy + (cz - hz) * fz end
+      end
+      state = d < 0.4 and al > -0.05 and 'scope' or d > 8 and 'far' or 'ours'
+      if state ~= k.state and d < 0.4 then log('camera %d: %.2f m from the head, %.2f m ahead', ci, d, al) end
       if k.main then S.gcx, S.gcy, S.gcz = cx, cy, cz end  -- the game's own camera: the line it shoots along
       if state == 'far' and mfx and mx then
         -- take it only when the mech frame puts it where the game shows the view (so it is the mech's camera)
