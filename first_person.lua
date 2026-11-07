@@ -1113,7 +1113,9 @@ end
 
 -- FRV seat from the diver's animation: every seat plays its own, whatever the car does (log 2026-11-06: 108 driver,
 -- 112 passenger, 104 gun). A head held over the car also counts as the gun (backup for a car with another gun animation)
-local FRV_ANIM = { [108] = 'driver', [112] = 'passenger', [104] = 'gunner' }  -- 104 = the gun on both Gunner and Incinerator FRV (log)
+-- the gun is ALWAYS 104 (both logs); the Gunner FRV's passenger seat sits over the car box and plays other numbers
+-- each round (105/106, then 109/110), so a head over the car with any other animation is the passenger seat
+local FRV_ANIM = { [108] = 'driver', [112] = 'passenger', [104] = 'gunner' }
 local function seat_anim()
   -- only next to a car or tank: no animation question anywhere else (see anim)
   if not S.head then return nil end
@@ -1129,7 +1131,7 @@ local function seat_anim()
 end
 local function frv_seat(it, x, y, z, gun)
   local anim = seat_anim()
-  local seat = gun and 'gunner' or FRV_ANIM[anim]
+  local seat = FRV_ANIM[anim] or gun and 'passenger'
   if seat == 'gunner' and not FRV_GUN[it.kind] then seat = nil end
   if not seat then  -- not a seat animation (getting in or out): keep the last seat, else by the side you sit on
     local fx, fy = chef.unit_rotation(it.unit)
