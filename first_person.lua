@@ -2,7 +2,7 @@
 -- HD2-Requires: chef-shared-loader
 -- SHODAN First Person: a first person camera with its own settings panel.
 local chef = ...
-local M = { version = '0.3.134' }
+local M = { version = '0.3.146' }
 local log = chef.log
 -- chef.call doesn't refuse a unit destroyed in this world (a swapped helmet): asking one ends the game
 local function call(name, a, b, ...)
@@ -1145,10 +1145,11 @@ local function frv_seat(it, x, y, z, gun)
   end
   return seat
 end
--- seated, then out of the FRV's box (tumbling, flipped): a seat animation within 5 m of an FRV keeps that seat
+-- a seat animation within 5 m of an FRV is that seat: keeps it out of the box (tumbling, flipped) and starts it while
+-- the head is still climbing in (log 0.3.145: seat animation 0.6 s before the head was inside the car's box)
 local function frv_near()
   local a = seat_anim()
-  if not (S.frv and FRV_ANIM[a] and frv_watch and S.head) then return false end  -- keeps a seat, never starts one
+  if not (FRV_ANIM[a] and frv_watch and S.head) then return false end
   local x, y = chef.unit_position(S.head.u, S.head.node)
   for _, it in ipairs(x and frv_watch.items or {}) do
     if abs(it.x - x) + abs(it.y - y) < 5 and (FRV_ANIM[a] ~= 'gunner' or FRV_GUN[it.kind]) then return it end
@@ -2414,7 +2415,9 @@ function M.update(dt)
     if it then S.frv = frv_seat(it, x, y, z, gun)
     else
       it = frv_near()
+      local was = S.frv
       S.frv = it and FRV_ANIM[seat_anim()] or false
+      if S.frv and not was then log('FRV %s seat %s from the animation, head not in the car yet', it.kind, S.frv) end
     end
     S.frv_pre = it and FRV_PRE[it.kind] or ''
     S.frv_u = S.frv and it and it.unit or nil
