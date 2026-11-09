@@ -1458,6 +1458,9 @@ local function target(dt)
   local hx, hy, hz = chef.unit_position(h.u, h.node)
   local rx, ry, rz = chef.unit_position(h.u, h.root)
   if not (hx and rx) then S.head = nil; return end
+  -- rising speed, eased over 0.05 s (a single-frame jump is a respawn or teleport)
+  if S.prz and dt > 0 and abs(rz - S.prz) < 2 then S.vz = S.vz + ((rz - S.prz) / dt - S.vz) * (1 - exp(-dt * 20)) else S.vz = 0 end
+  S.prz = rz
   local ox, oy, oz = hx - rx, hy - ry, hz - rz
   -- lying on your back, whatever got you there (backward or side dive, rolling over)
   local bu = (S.diving or S.stance == 'prone' or not S.bsign) and belly_up(h)
@@ -1527,6 +1530,10 @@ local function target(dt)
   -- dives track the head tight too: the smoothing trailed it by up to 0.3 m (toward the legs in a backward dive,
   -- over the belly so it vanished; in a forward dive it ate the 0.2 m forward push, log 2026-11-07)
   if S.diving and not S.oblie then local g = 1 - exp(-dt / 0.03); a, b = max(a, g), max(b, g) end
+  -- flying (jump pack: over 8 m/s along the floor or rising 5+ m/s, on foot) tracks the head tight too (report 2026-11-09)
+  local fast = sqrt(S.vx * S.vx + S.vy * S.vy)
+  local fly = (fast > 8 or S.vz > 5) and not (S.frv or S.mech or S.empl or S.tank)
+  if fly then local g = 1 - exp(-dt / 0.03); a, b = max(a, g), max(b, g) end
   S.sm[1], S.sm[2], S.sm[3] = S.sm[1] + (ox - S.sm[1]) * a, S.sm[2] + (oy - S.sm[2]) * a, S.sm[3] + (oz - S.sm[3]) * b
   local c = chef.camera()
   local fx, fy, fz = 0, 1, 0
@@ -1540,6 +1547,7 @@ local function target(dt)
   S.tx = rx + S.sm[1] + fx * f + fy / hl * sd
   S.ty = ry + S.sm[2] + fy * f - fx / hl * sd
   S.tz = rz + S.sm[3] + fz * f + up
+  S.trx, S.try, S.trz = rx, ry, rz  -- the root this view was built from (the draw pass moves it along)
 end
 
 -- the game's own camera rotation this frame: the one we wrote last frame (k.last) is still ours, anything else is the
@@ -2633,6 +2641,17 @@ function M.render()
   hold_body(w, true)
   -- the draw pass puts the camera back (the game moves it between update and draw every frame, 1.0.1 log): no easing (it ran twice as fast with both passes) and no enemy ranging
   S.dt, S.draw = 0, true
+  -- the body moves on after update too: carry the view along, or it trails a fast body (jump pack, report 2026-11-09)
+  local h = S.head
+  local x, y, z
+  if S.act and h and S.tx and S.trx then x, y, z = chef.unit_position(h.u, h.root) end
+  if x then
+    local dx, dy, dz = x - S.trx, y - S.try, z - S.trz
+    if abs(dx) + abs(dy) + abs(dz) < 2 then
+      S.tx, S.ty, S.tz = S.tx + dx, S.ty + dy, S.tz + dz
+    end
+    S.trx, S.try, S.trz = x, y, z
+  end
   place(w)
   S.draw = nil
 end
