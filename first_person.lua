@@ -81,7 +81,7 @@ local TABS = {
     { id = 'tp_galaxy', label = 'Third person at the galactic map', toggle = true, def = true,
       hint = 'Switches to the game camera while you use the galactic map.' },
     { id = 'tp_pod', label = 'Third person in the hellpod', toggle = true, def = true,
-      hint = 'Switches to the game camera when you climb into the hellpod on the ship, and in the drop until you step out of the pod.' },
+      hint = 'Switches to the game camera from the moment you use the hellpod on the ship until you climb out.' },
     { id = 'tp_term', label = 'Third person at terminals', toggle = true, def = true,
       hint = 'Switches to the game camera while you use a mission terminal, and back when you step off it.' },
     { head = '(Experimental, report issues!)', note = true },
@@ -943,8 +943,8 @@ end
 
 -- multiplayer: your own Helldiver only ever changes by coming down in a hellpod, with the game camera falling along.
 -- Any other Helldiver than the one you had (S.mine) is a teammate the camera follows (joining, spectating after a
--- death) unless a drop was just seen; each drop allows one pick. The game's
--- network session gives no unit owners (2026-11-07 log)
+-- death) unless a drop was just seen; each drop allows one pick. The game's network session gives no unit
+-- owners (2026-11-07 log)
 local function drop_seen() return S.drop_t and S.t - S.drop_t < 30 end
 local function others_here() return chef.in_mission() and (chef.players and chef.players() or 1) > 1 end
 
@@ -1767,7 +1767,7 @@ local function neck(w)
   local u = S.head and S.head.u
   -- S.stance is nil until the first stance change (0.3.130: nothing worked until the first crouch): nil = standing
   local ok = V.imm_on and S.act and u and (S.stance or 'stand') ~= 'prone'
-    and not (S.aim or S.diving or S.getup or S.frv or S.mech or S.empl or S.tank or S.pod or S.down or S.dead)
+    and not (S.aim or S.diving or S.getup or S.frv or S.mech or S.empl or S.tank or S.down or S.dead)
   if not ok then n.want, n.run, n.rt, n.px = nil, false, 0, nil; return end
   local c = chef.camera()
   local bx, by = chef.unit_rotation(u)
@@ -1853,6 +1853,18 @@ local function restore(k, cam)
 end
 
 local function place(w)
+  -- hellpod hand-off: each frame write the game's own camera spot moved toward first person by what's left of 0.25 s
+  local bw = not S.act and S.pout and S.tx and 1 - (S.t - S.pout) / 0.25 or 0
+  if bw > 0 then
+    for _, k in ipairs(S.cams) do
+      local cam = k.main and call('Unit.camera', k.u, k.slot)
+      local cx, cy, cz = xyz(cam and call('Camera.local_position', cam))
+      if cx then
+        call('Camera.set_local_position', cam, k.u, Vec(cx + (S.tx - cx) * bw, cy + (S.ty - cy) * bw, cz + (S.tz - cz) * bw))
+        call('World.update_unit', w, k.u)
+      end
+    end
+  end
   if not S.act then
     -- third person: only a vehicle's own field of view, else the game's
     for _, k in ipairs(S.cams) do
@@ -1881,6 +1893,7 @@ local function place(w)
     -- the game's own pose this frame (unless it's still ours from last frame): skip a camera the game already put at
     -- the head (its scope) or one far away (linked to something, so a world position would fling it)
     local cx, cy, cz = xyz(cam and call('Camera.local_position', cam))
+    if cx and not k.home and not k.wx then k.home = { cx, cy, cz } end  -- where the game keeps it, before we ever wrote
     local state = k.state == 'mech' and (mfx and 'mech' or 'far') or 'ours'  -- left the mech: never a world write on it
     if cx and not (k.wx and abs(cx - k.wx) + abs(cy - k.wy) + abs(cz - k.wz) < 0.001) then
       local d = sqrt((cx - hx) ^ 2 + (cy - hy) ^ 2 + (cz - hz) ^ 2)
@@ -1893,7 +1906,7 @@ local function place(w)
         local fx, fy, fz = xyz(call('Quaternion.forward', call('Camera.local_rotation', cam)))
         if fx then al = (cx - hx) * fx + (cy - hy) * fy + (cz - hz) * fz end
       end
-      local warp = S.warp and S.t - S.warp < 1 and (S.fall_t or 0) == 0 and not (S.frv or S.mech or S.empl or S.tank or S.pod)
+      local warp = S.warp and S.t - S.warp < 1 and (S.fall_t or 0) == 0 and not (S.frv or S.mech or S.empl or S.tank)
       state = d < 0.4 and al > -0.05 and 'scope' or d > 8 and not warp and 'far' or 'ours'
       if state ~= k.state and d < 0.4 then log('camera %d: %.2f m from the head, %.2f m ahead', ci, d, al) end
       if k.main then S.gcx, S.gcy, S.gcz = cx, cy, cz end  -- the game's own camera: the line it shoots along
@@ -1905,14 +1918,28 @@ local function place(w)
         if e and e < 0.5 then state = 'mech' end
       end
     end
+    -- a camera the game never moves (the ship's station and hellpod cameras) kept our view in it, and the game later
+    -- showed it from there: the view beside the head after a hellpod (1.0.29 log, 30 cameras left 0.31 m from the
+    -- head). Only cameras the game drives get written: put it back where the game had it, once
+    if cx and k.wx and state == 'ours' and not k.main then
+      k.idle = abs(cx - k.wx) + abs(cy - k.wy) + abs(cz - k.wz) < 0.001 and (k.idle or 0) + 1 or 0
+      if k.idle > 20 then k.static = true; log('camera %d: the game never moves it, left alone', ci) end
+    end
+    if k.static then state = 'static' end
     -- any hand-off (scope, far, back): the game shows the helmet again a few frames later, re-hide every frame for 1 s
     if state ~= k.state then k.state = state; S.rehide = S.t + 1; log('camera %d (slot %d): %s', ci, k.slot, state) end
     if state == 'scope' then scoped = true end
       if state ~= 'ours' and state ~= 'mech' then
       if k.wx then restore(k, cam) end
+      -- not the game's view camera: put back where the game keeps it, so our view never stays in it
+      if k.wx and cam and not k.main and k.home then
+        call('Camera.set_local_position', cam, k.u, Vec(k.home[1], k.home[2], k.home[3])); call('World.update_unit', w, k.u)
+      end
       k.wx = nil
     elseif cam then
       local px, py, pz = S.tx, S.ty, S.tz
+      local bi = S.pin and k.gp and (S.t - S.pin) / 0.25 or 1
+      if bi < 1 then px, py, pz = k.gp[1] + (px - k.gp[1]) * bi, k.gp[2] + (py - k.gp[2]) * bi, k.gp[3] + (pz - k.gp[3]) * bi end
       if state == 'mech' then
         local dx, dy = px - mx, py - my
         px, py, pz = dx * mfy - dy * mfx, dx * mfx + dy * mfy, pz - mz
@@ -1947,16 +1974,25 @@ end
 local function set_act(act, why)
   if act == S.act then return end
   S.act = act
+  -- hellpod: nothing written back, 0.25 s ease into the game's own camera and back out of it
+  local pod = why == 'hellpod'
+  if act and S.offwhy == 'hellpod' then S.pin = S.t end
+  if not act then S.offwhy, S.pout = why, pod and S.t or nil end
   if not act then
-    -- the game holds its camera still while you use a pod, so it stayed where we last put it (in the head, 0.3.100):
-    -- put the game's own last spot and turn back
+    -- other hand-offs: put the game's own last spot back and turn back (0.3.100)
     local w = chef.world()
     for _, k in ipairs(S.cams) do
       local cam = call('Unit.camera', k.u, k.slot)
-      if cam and k.wx and k.gp then call('Camera.set_local_position', cam, k.u, Vec(k.gp[1], k.gp[2], k.gp[3])) end
-      if cam and k.last and k.qb then call('Camera.set_local_rotation', cam, k.u, call('Quaternion.from_elements', k.qb[1], k.qb[2], k.qb[3], k.qb[4])) end
+      if cam and k.wx and not k.main and k.home then
+        -- not the game's view camera: back where the game keeps it, so our view never stays in it
+        call('Camera.set_local_position', cam, k.u, Vec(k.home[1], k.home[2], k.home[3]))
+      elseif not pod then
+        if cam and k.wx and k.gp then call('Camera.set_local_position', cam, k.u, Vec(k.gp[1], k.gp[2], k.gp[3])) end
+        if cam and k.last and k.qb then call('Camera.set_local_rotation', cam, k.u, call('Quaternion.from_elements', k.qb[1], k.qb[2], k.qb[3], k.qb[4])) end
+      end
       if cam and w and (k.wx or k.last) then call('World.update_unit', w, k.u) end
-      restore(k, cam); k.wx, k.state, k.last = nil, nil, nil
+      restore(k, cam)
+      k.wx, k.state, k.last = nil, nil, nil
     end
     S.tx, S.scoped, S.aim = nil, false, false
   end
@@ -2007,134 +2043,20 @@ local function term_check()
   end
 end
 
--- hellpod. Ship: climbing in plays a cutscene whose camera sits well away from your head (normal third person is
--- about 2 m behind it), so hand over while the game's camera is over 3.5 m from the head. That camera only comes
--- 1.3 s after you duck in (log 2026-11-07): the head drops to prone height first (0.74 m), and nothing else on the
--- ship lays you down, so prone on the ship = climbing in: the game's own view from there (user's choice).
--- Mission: no hellpod wait, first person as soon as the new Helldiver exists.
-local function pod_check(dt)
+-- hellpod (ship): the diver's animation, layer 13 (the 14th value of Unit.animation_get_state): 15 from the moment
+-- you use a pod (drop zone screen), 17 once inside, back to 3 as you climb out (1.0.27 log 2026-11-09). Game camera for
+-- all of it, never keys or the mouse (user). Mission: first person as soon as the new Helldiver exists.
+local POD_STATES = { [15] = true, [17] = true }
+local function pod_check()
   local h = S.head
-  local x, y, z
-  if h then x, y, z = chef.unit_position(h.u, h.node) end
-  if not x then S.pz = nil; return end
+  if not h then return end  -- head lost in the pod (cutscene camera far off): keep the state
   if chef.in_mission() then
-    -- no wait after landing: first person the moment the new Helldiver exists (2026-11-07)
-    S.cine, S.pship, S.plock, S.pod = false, false, false, false
+    S.puse = false
     if h.u ~= S.podu then S.podu = h.u; log('new Helldiver: first person at once') end
     return
   end
-  S.pod, S.pz = false, nil
-  -- using the hellpod takes the turn away from the mouse and the game aims its own shot (user video 2026-11-07):
-  -- the mouse moving with the game's view still, or the view turning with the mouse still, for 0.15 s = locked.
-  -- Back once the view follows the mouse again; never at the galactic map
-  local mk
-  for _, k in ipairs(S.cams) do if k.main then mk = k end end
-  local mcam = mk and call('Unit.camera', mk.u, mk.slot)
-  local gq, mine = nil, false
-  if mcam then gq, mine = game_rot(mk, mcam) end
-  local gx, gy, gz = xyz(gq and call('Quaternion.forward', gq))
-  local mdx, mdy = 0, 0
-  if chef.mouse_delta then mdx, mdy = chef.mouse_delta() end
-  S.mmove = abs(mdx or 0) + abs(mdy or 0)  -- read once a frame, shared with the out-of-pod hold
-  if gx and not S.galaxy and not S.panel and not (chef.mouse_held and chef.mouse_held()) then
-    local moved = abs(mdx or 0) + abs(mdy or 0) > 6
-    local turn = S.pf and math.deg(math.acos(max(-1, min(1, gx * S.pf[1] + gy * S.pf[2] + gz * S.pf[3])))) or 0
-    S.pf = { gx, gy, gz }
-    local odd = moved and turn < 0.02 or not moved and turn > 1
-    S.lk_on = odd and (S.lk_on or 0) + dt or 0
-    S.lk_off = (moved and turn >= 0.05) and (S.lk_off or 0) + dt or 0
-    -- no "game froze the view" trigger any more: it fired right after leaving the pod and anywhere else the game
-    -- freezes the view (0.3.98 log); E at a pod and the drop are the triggers
-    if S.plock and S.lk_off > 0.2 and not S.pship then
-      S.plock = false
-      if mine and mcam then call('Camera.set_local_rotation', mcam, mk.u, gq) end
-      mk.last = nil
-      S.pdone = false
-      log('turn back to the mouse')
-    end
-  elseif S.galaxy and S.plock then S.plock, S.pdone = false, false; log('turn back to the mouse (galactic map)') end
-  -- earlier: after you use a hellpod the game walks you to it. The body moving 0.2 s with no movement key held, within
-  -- 6 m of a pod spot learnt at an earlier climb (saved, so other terminals that walk you never count)
-  local rx, ry = chef.unit_position(h.u, h.root)
-  if rx then
-    if not S.podspots then
-      S.podspots = {}
-      for a, b in tostring(chef.load('pod_spots', '')):gmatch('(-?[%d.]+),(-?[%d.]+)') do S.podspots[#S.podspots + 1] = { tonumber(a), tonumber(b) } end
-    end
-    local sp = S.pod_rx and dt > 0 and sqrt((rx - S.pod_rx) ^ 2 + (ry - S.pod_ry) ^ 2) / dt or 0
-    S.pod_rx, S.pod_ry = rx, ry
-    local keys = false
-    for _, kn in ipairs({ 'w', 'a', 's', 'd', 'up', 'down', 'left', 'right' }) do if chef.key_down(kn) then keys = true end end
-    local near = false
-    for _, p in ipairs(S.podspots) do if (rx - p[1]) ^ 2 + (ry - p[2]) ^ 2 < 36 then near = true end end
-    S.aw_t = (sp > 0.6 and not keys and near and not S.galaxy) and (S.aw_t or 0) + dt or 0
-    if not S.plock and S.aw_t > 0.2 then S.plock, S.pdone, S.plock_t = true, false, S.t; log('walked to the hellpod: straight ahead (%.1f m/s)', sp) end
-    -- a missed E (no pod use): you walk off with a movement key, or no drop into the pod comes within 6 s (a real one
-    -- dropped 1.7-4.4 s after E). Our own turn holds the game's view still, so the mouse check can't see the miss
-    if S.plock and S.plock_t and not S.pship and (keys and sp > 0.5 or S.t - S.plock_t > 6) then
-      S.plock, S.plock_t = false, nil
-      local k0 = mk
-      if k0 and mcam and k0.qb then call('Camera.set_local_rotation', mcam, k0.u, call('Quaternion.from_elements', k0.qb[1], k0.qb[2], k0.qb[3], k0.qb[4])) end
-      if k0 then k0.last = nil end
-      log('hellpod not used after all: turn back to the mouse (%s)', keys and 'walked off' or '6 s')
-    end
-    if S.pend then
-      local ux, uy = chef.unit_rotation(h.u)
-      local d = ux and abs((math.atan2(uy, ux) - S.pend.yaw + math.pi) % (2 * math.pi) - math.pi) or 0
-      if keys or S.t - S.pend.t > 1.5 then S.pend = nil; log('interact was not the hellpod (no turn toward it)')
-      elseif math.deg(d) > 15 then
-        S.pend = nil; S.plock, S.pdone, S.plock_t = true, false, S.t  -- a new climb: reversed again
-        log('used the hellpod: straight ahead (body turned %.0f deg by itself)', math.deg(d))
-      end
-    end
-    -- the moment you use the pod: the game freezes the view at once and drops you in 1.7 s later (log 2026-11-07),
-    -- with no walk and nothing else to see, so the interact key (E) near a known pod spot is the signal
-    if not S.plock and not S.galaxy and chef.key_pressed('e') then
-      local best
-      for _, p in ipairs(S.podspots) do local d = sqrt((rx - p[1]) ^ 2 + (ry - p[2]) ^ 2); best = min(best or d, d) end
-      log('interact key %s m from the nearest hellpod spot', best and string.format('%.1f', best) or '?')
-      -- 6 m: the 4 pods stand side by side, so one known spot covers the whole row (each used pod is learnt too)
-      -- shortcut: assumes the row spans under 6 m from the first pod learnt; pre-fill all 4 spots if one is missed
-      -- a real use turns the body toward the pod by itself (20-180 deg within 1.2 s, no key held); a miss doesn't
-      if best and best < 6 then
-        -- the body-turn check (0.3.95) missed a real use (already facing the pod): take E at once; a miss lets go on
-        -- a movement key or after 6 s
-        S.plock, S.pdone, S.plock_t = true, false, S.t; log('used the hellpod: game camera')
-      end
-    end
-  end
-  local pr = S.stance == 'prone'
-  if not pr and S.pship then S.pdone = true; if S.plock then S.plock = false; log('turn back to the mouse (out of the pod)') end end
-  -- learn this pod's spot (where the root stays while you drop in)
-  if pr and not S.pship and rx and S.podspots then
-    local new = true
-    for _, p in ipairs(S.podspots) do if (rx - p[1]) ^ 2 + (ry - p[2]) ^ 2 < 4 then new = false end end
-    if new and #S.podspots < 8 then
-      S.podspots[#S.podspots + 1] = { rx, ry }
-      local t = {}
-      for _, p in ipairs(S.podspots) do t[#t + 1] = string.format('%.2f,%.2f', p[1], p[2]) end
-      chef.save('pod_spots', table.concat(t, ';'))
-      log('hellpod spot learnt (%.2f, %.2f), %d known', rx, ry, #S.podspots)
-    end
-  end
-  if pr then S.plock_t = nil end
-  if pr and not S.pship and not S.plock then S.plock, S.pdone = true, false; log('dropping into the hellpod: straight ahead') end
-  if pr ~= (S.pship or false) then S.pship = pr; log('hellpod entry %s (head %.2f m over the feet)', pr and 'start' or 'end', z - select(3, chef.unit_position(h.u, h.root))) end
-  for _, k in ipairs(S.cams) do
-    if k.main then
-      local cam = call('Unit.camera', k.u, k.slot)
-      local cx, cy, cz = xyz(cam and call('Camera.local_position', cam))
-      if cx and not (k.wx and abs(cx - k.wx) + abs(cy - k.wy) + abs(cz - k.wz) < 0.001) then  -- ours from last frame: keep
-        local far = (cx - x) ^ 2 + (cy - y) ^ 2 + (cz - z) ^ 2 > 3.5 ^ 2
-        S.cine_t = far == (S.cine or false) and 0 or (S.cine_t or 0) + dt
-        if S.cine_t > (far and 0.1 or 0.5) then
-          S.cine, S.cine_t = far, 0
-          log('ship cutscene camera %s (%.1f m from the head, anim %s)', far and 'on' or 'off',
-            sqrt((cx - x) ^ 2 + (cy - y) ^ 2 + (cz - z) ^ 2), tostring(anim(h.u)))
-        end
-      end
-    end
-  end
+  local use = POD_STATES[select(14, anim(h.u, true))] or false
+  if use ~= (S.puse or false) then S.puse = use; log('hellpod %s', use and 'in use' or 'left') end
 end
 
 -- the game's map and stratagem list, read from the diver's animation, never from keys (the game refuses and shuts both
@@ -2161,11 +2083,11 @@ local function update_act()
   elseif S.dead then why = 'dead'
   elseif binds.peek and binds.peek.down() and not S.panel then why = 'peek key'
   elseif V.tp_galaxy and S.galaxy then why = 'galactic map'
-  elseif V.tp_pod and (S.pod or S.cine or S.plock or S.pship) then why = 'hellpod'  -- user: the game's own view from pressing E on a pod
+  elseif V.tp_pod and S.puse then why = 'hellpod'  -- user: the game's own view from using a pod
   elseif V.tp_term and S.term then why = 'terminal'
   elseif V.tp_menus and S.map_open then why = 'map'
   elseif V.tp_menus and S.strat_open then why = 'stratagems'
-  elseif V.tp_down and S.down and not S.pship and not S.plock and not (S.frv or S.mech or S.empl or S.tank) then why = 'knocked down'  -- seats look like lying down
+  elseif V.tp_down and S.down and not (S.frv or S.mech or S.empl or S.tank) then why = 'knocked down'  -- seats look like lying down
   elseif S.tank and (S.tank.seat == 'crew' or V[S.tank.tp]) then why = 'tank ' .. S.tank.seat
   elseif S.frv and V[S.frv_pre .. 'frv_tp'] then why = 'FRV'
   elseif S.mech and V[S.mech_pre .. 'tp_mech'] then why = 'mech'
@@ -2506,7 +2428,7 @@ local function death_check()
     vo = ((hz - rz) - S.dko) / dt  -- head over the feet, m/s (a dive drops about 3)
   end
   if rx and hz then S.dkx, S.dky, S.dkz, S.dko, S.dku = rx, ry, rz, hz - rz, h.u else S.dkx = nil end
-  if S.dead and h and h.u ~= S.corpse and not lying and not S.pod then S.dead = false; log('up: first person again') end
+  if S.dead and h and h.u ~= S.corpse and not lying then S.dead = false; log('up: first person again') end
   -- PROBE (death round): every 0.1 s for 4 s from any fall, so the next crash shows what dying looks like
   if lying or S.dead then S.ptill = S.t + 4 end
   if h and S.ptill and S.t < S.ptill then
@@ -2541,7 +2463,7 @@ function M.update(dt)
     S.ghid, S.gst, S.gsaid = {}, {}, {}
     S.last_scan, S.rescans, S.cam_gen = nil, {}, nil
     S.hr = nil
-    S.ad, S.aw, S.podu, S.pod, S.cine, S.pship, S.plock, S.pdone, S.pend = nil, nil, nil, false, false, false, false, false, nil
+    S.ad, S.aw, S.podu, S.puse = nil, nil, nil, false
     S.act, S.down, S.stance, S.hmax, S.fv = false, false, nil, nil, nil
     S.mech, S.frv, S.empl, S.tank, S.tpass = false, false, false, false, false
     S.dead, S.corpse, S.avs, S.av_gen, S.dgen, S.dcams, S.dkx = false, nil, nil, nil, nil, nil, nil
@@ -2618,8 +2540,7 @@ function M.update(dt)
   if S.on and S.head then target(dt) end
   if S.on and V.tp_galaxy then galaxy_check(dt) else S.galaxy = false end   -- every frame: the head shows at once
   if S.on and V.tp_term then term_check() else S.term = false end
-  S.mmove = 0
-  if S.on and V.tp_pod then pod_check(dt) else S.pod, S.cine, S.pship, S.plock = false, false, false, false end
+  if S.on and V.tp_pod then pod_check() else S.puse = false end
   menu_check()
   update_act()
   -- aiming (right mouse, held or toggled): its own field of view, blended; 0 = the same as the normal one
