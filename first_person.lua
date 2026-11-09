@@ -87,6 +87,8 @@ local TABS = {
     { head = '(Experimental, report issues!)', note = true },
     { id = 'tp_menus', label = 'Third person for map and stratagems', toggle = true, def = false,
       hint = 'Switches to the game camera while you hold the map or stratagem key (set them on the KEYS tab).' },
+    { id = 'tp_down', label = 'Third person when knocked down', toggle = true, def = false,
+      hint = 'Switches to the game\'s camera while you tumble or lie dead, and back once you are up.' },
   } },
   { name = 'AIM', rows = {
     { head = 'CROSSHAIR FIX' },
@@ -155,8 +157,6 @@ local TABS = {
       hint = 'While you get up, the view stays at least this far in front of your body, the way you look, so you never see your own back.' },
     { id = 'getup_lift', label = 'Lift while getting up', min = 0, max = 0.6, step = 0.05, def = 0.45, unit = ' m',
       hint = 'Raises the view this much while you get up, eased in and out, so it stays over your shoulders.' },
-    { id = 'tp_down', label = 'Third person when knocked down', toggle = true, def = false,
-      hint = 'Switches to the game\'s camera while you tumble or lie dead, and back once you are up.' },
     { head = 'LYING DOWN' },
     { id = 'eyes', label = 'View from past the head when down', toggle = true, def = false,
       hint = 'While diving or lying, the view sits just past the top of your head, following the animation, so it stays out of your body.' },
