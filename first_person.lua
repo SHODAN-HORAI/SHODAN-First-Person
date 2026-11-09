@@ -1453,12 +1453,23 @@ local function belly_up(h)
   if S.bsign then return S.bsign * bz / bl, S.bsign * bx / bl, S.bsign * by / bl end
 end
 
+-- a 2-40 m jump of the body in one frame = a warp (warp pack): the game's camera trails ~0.3 s behind it, which place()
+-- took for a far camera and handed the view to it (report 2026-11-09)
+local function warp_check(dx, dy, dz)
+  local j = abs(dx) + abs(dy) + abs(dz)
+  if j < 2 or j >= 40 then return end
+  if not (S.warp and S.t - S.warp < 0.2) then log('warp %.1f m', j) end
+  S.warp = S.t
+end
+
 -- the view position for this frame: head (its offset from the root smoothed), then the offsets along the view
 local function target(dt)
   local h = S.head
   local hx, hy, hz = chef.unit_position(h.u, h.node)
   local rx, ry, rz = chef.unit_position(h.u, h.root)
   if not (hx and rx) then S.head = nil; return end
+  if S.prx and S.prz and S.wu == h.u then warp_check(rx - S.prx, ry - S.pry, rz - S.prz) end
+  S.wu = h.u  -- a new body (reinforced) is no warp
   -- rising speed, eased over 0.05 s (a single-frame jump is a respawn or teleport)
   if S.prz and dt > 0 and abs(rz - S.prz) < 2 then S.vz = S.vz + ((rz - S.prz) / dt - S.vz) * (1 - exp(-dt * 20)) else S.vz = 0 end
   S.prz = rz
@@ -1891,7 +1902,8 @@ local function place(w)
         local fx, fy, fz = xyz(call('Quaternion.forward', call('Camera.local_rotation', cam)))
         if fx then al = (cx - hx) * fx + (cy - hy) * fy + (cz - hz) * fz end
       end
-      state = d < 0.4 and al > -0.05 and 'scope' or d > 8 and 'far' or 'ours'
+      local warp = S.warp and S.t - S.warp < 1 and (S.fall_t or 0) == 0 and not (S.frv or S.mech or S.empl or S.tank or S.pod)
+      state = d < 0.4 and al > -0.05 and 'scope' or d > 8 and not warp and 'far' or 'ours'
       if state ~= k.state and d < 0.4 then log('camera %d: %.2f m from the head, %.2f m ahead', ci, d, al) end
       if k.main then S.gcx, S.gcy, S.gcz = cx, cy, cz end  -- the game's own camera: the line it shoots along
       if state == 'far' and mfx and mx then
@@ -2675,9 +2687,8 @@ function M.render()
   if S.act and h and S.tx and S.trx then x, y, z = chef.unit_position(h.u, h.root) end
   if x then
     local dx, dy, dz = x - S.trx, y - S.try, z - S.trz
-    if abs(dx) + abs(dy) + abs(dz) < 2 then
-      S.tx, S.ty, S.tz = S.tx + dx, S.ty + dy, S.tz + dz
-    end
+    warp_check(dx, dy, dz)  -- same body as this frame's update, so the shift is exact even for a warp
+    S.tx, S.ty, S.tz = S.tx + dx, S.ty + dy, S.tz + dz
     S.trx, S.try, S.trz = x, y, z
   end
   place(w)
