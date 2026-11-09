@@ -2141,9 +2141,34 @@ local function menu_keys()
   if S.frv or S.mech or S.empl or S.tank then S.seat_t = S.t
   elseif S.seat_t and S.t - S.seat_t < 1.5 then S.map_open, S.strat_open = false, false; return end
   local esc = chef.key_pressed('escape')
+  local was = S.map_open
   if V.map_toggle then
     if binds.map_key.pressed() then S.map_open = not S.map_open elseif esc then S.map_open = false end
-  else S.map_open = binds.map_key.down() end
+  else S.map_open = binds.map_key.down() and (S.map_open or binds.map_key.pressed()) end  -- shut by the game: until the next press
+  -- the game puts its map away when a full-body action starts on animation layer 9 (277 jump pack launch; the ledge
+  -- stagger, user 2026-11-09), but keeps an open map through the flight (207) and its landing (282) (tests 1.0.12/1.0.13:
+  -- shutting on every rise or on landing ran the toggle backwards). Only changes count, so a held state can't block it;
+  -- the launch (277) and the landing (282) also ignore the map key (user + 1.0.14 log: Tab during them = no map)
+  local st = S.map_open and S.head and { anim(S.head.u, true) }
+  local a9 = st and st[9]
+  if a9 == 277 or a9 == 282 and not was then S.map_open = false; log('map %s by the game: action %s', was and 'shut' or 'key ignored', a9)
+  elseif a9 and S.a9 and a9 ~= S.a9 then
+    if a9 ~= 0 and a9 ~= 207 and S.a9 ~= 207 then S.map_open = false; log('map shut by the game: action %s (was %s)', a9, S.a9) end
+  end
+  S.a9 = a9
+  if a9 == 282 then S.cush_t = S.t end
+  -- a hard landing staggers the diver and the game puts its map away (user 2026-11-09; 1.0.14 log: 3.5 s fall, no
+  -- layer 9 state at all), unless it's the jump pack's own landing (282, which may start up to 0.1 s after touchdown)
+  -- shortcut: 10 m/s (a fall of about 5 m) is a guess, tune it from the 'landed at' lines
+  local vz = S.vz or 0
+  if vz < -4 then S.vmin = min(S.vmin or 0, vz)
+  elseif S.vmin and vz > -1 then S.land, S.vmin = { t = S.t, v = -S.vmin }, nil end
+  if S.land and S.t >= S.land.t + 0.3 then
+    local jp = S.cush_t and S.cush_t >= S.land.t - 0.5
+    if S.map_open and not jp and S.land.v > 10 then S.map_open = false; log('map shut by the game: hard landing at %.1f m/s', S.land.v)
+    else log('landed at %.1f m/s%s, map %s', S.land.v, jp and ' (jump pack)' or '', S.map_open and 'open' or 'closed') end
+    S.land = nil
+  end
   if V.strat_toggle then
     local click = chef.mouse_down('left')
     if binds.strat_key.pressed() then S.strat_open = not S.strat_open; S.strat_t = S.t
