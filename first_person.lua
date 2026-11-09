@@ -53,12 +53,14 @@ local TABS = {
     { id = 'profile', label = 'Profile in use', min = 1, max = 5, step = 1, def = 1, global = true,
       hint = 'Five saved setups. Every setting except keys belongs to the profile in use. Switch with the profile key (KEYS tab).' },
     { head = 'POSITION' },
-    { id = 'fwd', label = 'Forward', min = -0.3, max = 0.5, step = 0.01, def = 0.12, unit = ' m',
-      hint = 'How far in front of your eyes the view sits.' },
-    { id = 'up', label = 'Height', min = -0.3, max = 0.3, step = 0.01, def = 0.1, unit = ' m',
+    { id = 'fwd', label = 'Forward', min = -0.3, max = 0.5, step = 0.01, def = 0.07, unit = ' m',
+      hint = 'How far in front of your head the view sits, along the floor.' },
+    { id = 'up', label = 'Height', min = -0.3, max = 0.3, step = 0.01, def = 0.04, unit = ' m',
       hint = 'Raise or lower the view.' },
     { id = 'side', label = 'Sideways', min = -0.3, max = 0.3, step = 0.01, def = 0, unit = ' m',
       hint = 'Move the view left (minus) or right.' },
+    { id = 'look_down', label = 'Looking down', min = 0, max = 0.4, step = 0.01, def = 0.12, unit = ' m',
+      hint = 'Pushes the view forward as you look down, up to this far, so you look over your chest instead of into it.' },
     { head = 'VIEW' },
     { id = 'fov', label = 'Field of view', min = 0, max = 120, step = 1, def = 100, unit = ' deg', zero = 'GAME',
       hint = 'Up-down view angle in degrees. GAME keeps the game\'s own.' },
@@ -143,7 +145,7 @@ local TABS = {
       hint = 'The same for dives backward.' },
     { id = 'dive_fwd', label = 'Forward', min = 0, max = 0.5, step = 0.01, def = 0.2, unit = ' m',
       hint = 'Moves the view forward during a forward or sideways dive, out of the collar.' },
-    { id = 'bdive_fwd', label = 'Backward dive: forward', min = -0.4, max = 0.4, step = 0.01, def = -0.15, unit = ' m',
+    { id = 'bdive_fwd', label = 'Backward dive: forward', min = -0.4, max = 0.4, step = 0.01, def = 0.2, unit = ' m',
       hint = 'During a backward dive, until you lie still: moves the view the way you look. Minus = back toward your head, away from your legs.' },
     { id = 'dive_look', label = 'Backward dive: lowest look', min = 0, max = 80, step = 1, def = 24, unit = ' deg', zero = 'OFF',
       hint = 'During a backward dive, until you lie still, the view tilts no further down than this (eased), so it never looks into your own body.' },
@@ -1547,9 +1549,13 @@ local function target(dt)
   local f = V.fwd + (seat and V[pre .. seat[1]] or S.sf or 0)
   local up = V.up + (seat and V[pre .. seat[2]] or S.su or 0)
   local sd = V.side + (seat and V[pre .. seat[3]] or S.ss or 0)
-  S.tx = rx + S.sm[1] + fx * f + fy / hl * sd
-  S.ty = ry + S.sm[2] + fy * f - fx / hl * sd
-  S.tz = rz + S.sm[3] + fz * f + up
+  -- offsets along the level view, height straight up: looking up or down no longer carries the view up into the gun
+  -- or down into the chest; on foot, looking down pushes it forward instead
+  local ux, uy = fx / hl, fy / hl
+  if not seat then f = f + max(0, -fz) * V.look_down end
+  S.tx = rx + S.sm[1] + ux * f + uy * sd
+  S.ty = ry + S.sm[2] + uy * f - ux * sd
+  S.tz = rz + S.sm[3] + up
   S.trx, S.try, S.trz = rx, ry, rz  -- the root this view was built from (the draw pass moves it along)
 end
 
@@ -1959,6 +1965,10 @@ local function place(w)
           call('Camera.set_near_range', cam, nr)
         elseif k.near0 then call('Camera.set_near_range', cam, k.near0); k.near0 = nil end
         if S.fv then
+          if k.main and not k.fov0 then
+            once('gf' .. tostring(S.world), 'game field of view %.0f deg, closest visible %.2f m',
+              math.deg(call('Camera.vertical_fov', cam) or 0), call('Camera.near_range', cam) or -1)
+          end
           k.fov0 = k.fov0 or call('Camera.vertical_fov', cam)
           k.fvw = math.rad(S.fv)
           call('Camera.set_vertical_fov', cam, k.fvw)
