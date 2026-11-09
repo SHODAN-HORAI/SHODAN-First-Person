@@ -22,8 +22,7 @@ on an emplacement. Settings save between launches and can be kept as profiles.
 | F7 | Hold for third person |
 | F10 | Open the settings panel |
 
-Every key can be changed on the panel's Keys tab, along with next profile
-and how the game's map and stratagem keys behave.
+Every key can be changed on the panel's Keys tab, along with next profile.
 
 ## Settings panel
 

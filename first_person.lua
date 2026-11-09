@@ -86,7 +86,7 @@ local TABS = {
       hint = 'Switches to the game camera while you use a mission terminal, and back when you step off it.' },
     { head = '(Experimental, report issues!)', note = true },
     { id = 'tp_menus', label = 'Third person for map and stratagems', toggle = true, def = false,
-      hint = 'Switches to the game camera while you hold the map or stratagem key (set them on the KEYS tab).' },
+      hint = 'Switches to the game camera while the map or stratagem list is out.' },
     { id = 'tp_down', label = 'Third person when knocked down', toggle = true, def = false,
       hint = 'Switches to the game\'s camera while you tumble or lie dead, and back once you are up.' },
   } },
@@ -296,15 +296,6 @@ local TABS = {
       hint = 'Hold to look around while your body stays where it is. Let go and the body turns to catch up. Press RIGHT, then the new key.' },
     { id = 'peek', label = 'Hold for third person', key = true, def = 'f7',
       hint = 'Hold to see the game\'s camera, let go to go back. Press RIGHT, then the new key.' },
-    { head = 'GAME KEYS' },
-    { id = 'map_key', label = 'Game map key', key = true, def = 'tab',
-      hint = 'The key you hold for the map in the game, for third person on the map. Press RIGHT, then the key.' },
-    { id = 'map_toggle', label = 'Map key toggles', toggle = true, def = true, global = true,
-      hint = 'Turn on if your game is set to toggle the map instead of holding the key.' },
-    { id = 'strat_key', label = 'Game stratagem key', key = true, def = 'left ctrl',
-      hint = 'The key you hold for stratagems in the game, for third person while typing them. Press RIGHT, then the key.' },
-    { id = 'strat_toggle', label = 'Stratagem key toggles', toggle = true, def = true, global = true,
-      hint = 'Turn on if your game is set to toggle the stratagem list. Back to first person on the key again, Escape, a click or after 5 s.' },
     { id = 'profile_key', label = 'Next profile', key = true, def = 'off',
       hint = 'Switches to the next of the five profiles. Press RIGHT, then the new key. DELETE sets none.' },
     { head = 'PANEL' },
@@ -2146,48 +2137,22 @@ local function pod_check(dt)
   end
 end
 
--- the game's map and stratagem list: held keys, or toggled (open on a press, closed on the next, Escape, and for
--- stratagems a click or 5 s: the game closes that list on its own once a code is in, which we can't see)
-local function menu_keys()
-  if S.panel then S.map_open, S.strat_open = false, false; return end
-  -- getting out of a seat (1.5 s): the game ignores the map / stratagem keys, so a press must not open ours
-  if S.frv or S.mech or S.empl or S.tank then S.seat_t = S.t
-  elseif S.seat_t and S.t - S.seat_t < 1.5 then S.map_open, S.strat_open = false, false; return end
-  local esc = chef.key_pressed('escape')
-  local was = S.map_open
-  if V.map_toggle then
-    if binds.map_key.pressed() then S.map_open = not S.map_open elseif esc then S.map_open = false end
-  else S.map_open = binds.map_key.down() and (S.map_open or binds.map_key.pressed()) end  -- shut by the game: until the next press
-  -- the game puts its map away when a full-body action starts on animation layer 9 (277 jump pack launch; the ledge
-  -- stagger, user 2026-11-09), but keeps an open map through the flight (207) and its landing (282) (tests 1.0.12/1.0.13:
-  -- shutting on every rise or on landing ran the toggle backwards). Only changes count, so a held state can't block it;
-  -- the launch (277) and the landing (282) also ignore the map key (user + 1.0.14 log: Tab during them = no map)
-  local st = S.map_open and S.head and { anim(S.head.u, true) }
-  local a9 = st and st[9]
-  if a9 == 277 or a9 == 282 and not was then S.map_open = false; log('map %s by the game: action %s', was and 'shut' or 'key ignored', a9)
-  elseif a9 and S.a9 and a9 ~= S.a9 then
-    if a9 ~= 0 and a9 ~= 207 and S.a9 ~= 207 then S.map_open = false; log('map shut by the game: action %s (was %s)', a9, S.a9) end
+-- the game's map and stratagem list, read from the diver's animation, never from keys (the game refuses and shuts both
+-- in too many ways). Map: layer 28 = 5 from the moment it comes up until it goes down, 2 otherwise, standing, crouched,
+-- prone and moving (1.0.23 log, 13 presses; the arm pose missed it crouched and moving). Stratagem list: layer 10 = 306,
+-- 131 lying down (1.0.20/1.0.21 logs: on 0.4 s after the key, off as it shuts, also while jogging); layer 11 = 636 bridges
+-- those 0.4 s (on the very frame of the key, then 869/872 once the list is up; 1.0.20 log, every press)
+local function menu_check()
+  local h = S.head
+  if not (S.on and V.tp_menus and h and chef.in_mission()) or S.panel or S.frv or S.mech or S.empl or S.tank then
+    S.map_open, S.strat_open = false, false; return
   end
-  S.a9 = a9
-  if a9 == 282 then S.cush_t = S.t end
-  -- a hard landing staggers the diver and the game puts its map away (user 2026-11-09; 1.0.14 log: 3.5 s fall, no
-  -- layer 9 state at all), unless it's the jump pack's own landing (282, which may start up to 0.1 s after touchdown)
-  -- shortcut: 10 m/s (a fall of about 5 m) is a guess, tune it from the 'landed at' lines
-  local vz = S.vz or 0
-  if vz < -4 then S.vmin = min(S.vmin or 0, vz)
-  elseif S.vmin and vz > -1 then S.land, S.vmin = { t = S.t, v = -S.vmin }, nil end
-  if S.land and S.t >= S.land.t + 0.3 then
-    local jp = S.cush_t and S.cush_t >= S.land.t - 0.5
-    if S.map_open and not jp and S.land.v > 10 then S.map_open = false; log('map shut by the game: hard landing at %.1f m/s', S.land.v)
-    else log('landed at %.1f m/s%s, map %s', S.land.v, jp and ' (jump pack)' or '', S.map_open and 'open' or 'closed') end
-    S.land = nil
-  end
-  if V.strat_toggle then
-    local click = chef.mouse_down('left')
-    if binds.strat_key.pressed() then S.strat_open = not S.strat_open; S.strat_t = S.t
-    elseif esc or click and not S.lmb or S.t - (S.strat_t or 0) > 5 then S.strat_open = false end
-    S.lmb = click
-  else S.strat_open = binds.strat_key.down() end
+  local st = { anim(h.u, true) }
+  -- 636 ends a frame or two before layer 10 reaches 306 (1.0.25 log, standing/crouched): hold it 0.15 s across the gap
+  if st[11] == 636 then S.t636 = S.t end
+  local map, strat = st[28] == 5, st[10] == 306 or st[10] == 131 or (S.t636 or -1) > S.t - 0.15
+  if map ~= (S.map_open or false) then S.map_open = map; log('map %s', map and 'out' or 'away') end
+  if strat ~= (S.strat_open or false) then S.strat_open = strat; log('stratagem list %s', strat and 'out' or 'away') end
 end
 
 local function update_act()
@@ -2655,7 +2620,7 @@ function M.update(dt)
   if S.on and V.tp_term then term_check() else S.term = false end
   S.mmove = 0
   if S.on and V.tp_pod then pod_check(dt) else S.pod, S.cine, S.pship, S.plock = false, false, false, false end
-  menu_keys()
+  menu_check()
   update_act()
   -- aiming (right mouse, held or toggled): its own field of view, blended; 0 = the same as the normal one
   local rmb = not P.open and chef.mouse_down('right') or false
