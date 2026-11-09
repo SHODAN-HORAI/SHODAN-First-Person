@@ -1704,13 +1704,6 @@ local function aim_fix(k, cam, dt)
   -- the strength slider only while aiming: from the hip the game camera sits far back, so anything less than the
   -- full turn leaves the shots far off the crosshair (0.3.103 at strength 5)
   local w = S.aw * (S.aim and V.aim_strength / 10 or 1)
-  -- PROBE (remove once hip fire is confirmed): game camera to eye gap, turn, distance
-  if not S.aim and chef.mouse_down('left') and S.t >= (S.hprobe or 0) then
-    S.hprobe = S.t + 0.25
-    log('hip fix: game camera %.2f m from the eye (head %.2f m), turn %.1f deg, %s %.1f m (now %.1f)',
-      sqrt((S.gcx - k.wx) ^ 2 + (S.gcy - k.wy) ^ 2 + (S.gcz - k.wz) ^ 2), sqrt((k.wx - S.tx) ^ 2 + (k.wy - S.ty) ^ 2 +
-      (k.wz - S.tz) ^ 2), math.deg(math.acos(min(1, c))), src or 'no enemy', S.ad, S.araw or 0)
-  end
   local nq = call('Quaternion.look', Vec(dx + w * (hx - dx), dy + w * (hy - dy), dz + w * (hz - dz)), Vec(0, 0, 1))
   local _, err = call('Camera.set_local_rotation', cam, k.u, nq)
   if err then once('aw' .. tostring(err), 'aim fix: rotation write refused: %s', tostring(err)) else wrote(k, nq) end
@@ -1748,7 +1741,6 @@ end
 -- immersive mode: the view may turn only neck_yaw off the body's facing; past that the body is turned to follow.
 -- While aiming the game faces the body to the gun itself (0.3.125 log: our writes there were undone, ~13 deg off), so
 -- we leave it alone then. teleport_local_rotation did nothing at all (0.3.125), set_local_rotation is kept.
--- PROBE: logs view vs body yaw and whether the game keeps the turn we wrote.
 local function wrap(a) return (a + 180) % 360 - 180 end
 -- free look: put the body back to the facing held at the key press. Also run at draw time (M.render): past ~60 deg the
 -- game's turn-in-place animation (anim 17 crouched, 60 standing) turned the body after our update write (0.3.131 log).
@@ -1965,10 +1957,6 @@ local function place(w)
           call('Camera.set_near_range', cam, nr)
         elseif k.near0 then call('Camera.set_near_range', cam, k.near0); k.near0 = nil end
         if S.fv then
-          if k.main and not k.fov0 then
-            once('gf' .. tostring(S.world), 'game field of view %.0f deg, closest visible %.2f m',
-              math.deg(call('Camera.vertical_fov', cam) or 0), call('Camera.near_range', cam) or -1)
-          end
           k.fov0 = k.fov0 or call('Camera.vertical_fov', cam)
           k.fvw = math.rad(S.fv)
           call('Camera.set_vertical_fov', cam, k.fvw)
@@ -2427,32 +2415,8 @@ local function death_check()
     S.dcams = set
     if changed and lying and not S.dead then S.dead = true; log('cameras changed while lying (%s): game camera until up', S.stance or '?') end
   end
-  -- body motion for the fall probe only (a speed-based 'thrown' check mistook ledge climbs for blasts: removed)
-  local h, dt = S.head, S.dt or 0
-  local rx, ry, rz, hz
-  if h then rx, ry, rz = chef.unit_position(h.u, h.root); hz = select(3, chef.unit_position(h.u, h.node)) end
-  local vh, vz, vo = 0, 0, 0
-  if rx and hz and S.dkx and dt > 0 and dt < 0.1 and S.dku == h.u then
-    vh = sqrt((rx - S.dkx) ^ 2 + (ry - S.dky) ^ 2) / dt
-    vz = (rz - S.dkz) / dt
-    vo = ((hz - rz) - S.dko) / dt  -- head over the feet, m/s (a dive drops about 3)
-  end
-  if rx and hz then S.dkx, S.dky, S.dkz, S.dko, S.dku = rx, ry, rz, hz - rz, h.u else S.dkx = nil end
+  local h = S.head
   if S.dead and h and h.u ~= S.corpse and not lying then S.dead = false; log('up: first person again') end
-  -- PROBE (death round): every 0.1 s for 4 s from any fall, so the next crash shows what dying looks like
-  if lying or S.dead then S.ptill = S.t + 4 end
-  if h and S.ptill and S.t < S.ptill then
-    S.dprobe = (S.dprobe or 0) - dt
-    if S.dprobe <= 0 then
-      S.dprobe = 0.1
-      local hx, hy = chef.unit_position(h.u, h.node)
-      local gd = S.gcx and hx and hz and sqrt((S.gcx - hx) ^ 2 + (S.gcy - hy) ^ 2 + (S.gcz - hz) ^ 2)
-      log('PROBE fall: head %s m over feet, %.1f m/s along, %.1f up, head %.1f, game camera %s m, cameras %d, %d, view %s%s',
-        hz and rz and string.format('%.2f', hz - rz) or '?', vh, vz, vo,
-        gd and string.format('%.1f', gd) or '?', #cam_watch.items, 0,
-        S.act and 'ours' or 'game', S.dead and ', dead' or '')
-    end
-  end
 end
 
 function M.update(dt)
@@ -2476,7 +2440,7 @@ function M.update(dt)
     S.ad, S.aw, S.podu, S.puse = nil, nil, nil, false
     S.act, S.down, S.stance, S.hmax, S.fv = false, false, nil, nil, nil
     S.mech, S.frv, S.empl, S.tank, S.tpass = false, false, false, false, false
-    S.dead, S.corpse, S.avs, S.av_gen, S.dgen, S.dcams, S.dkx = false, nil, nil, nil, nil, nil, nil
+    S.dead, S.corpse, S.avs, S.av_gen, S.dgen, S.dcams = false, nil, nil, nil, nil, nil
     S.mine, S.drop_t, S.fall_t, S.lcz, S.fall_max, S.avtop, S.avfollow = nil, nil, 0, nil, 0, {}, {}
   end
   S.t = S.t + dt
