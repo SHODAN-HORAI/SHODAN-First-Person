@@ -76,14 +76,15 @@ local TABS = {
     { head = 'SWITCHING' },
     { id = 'start_on', label = 'Start in first person', toggle = true, def = true,
       hint = 'Turn first person on by itself at the start of every mission.' },
+    { id = 'messages', label = 'On-screen messages', toggle = true, def = true, global = true,
+      hint = 'Shows FIRST PERSON ON or OFF and the profile number for a moment when you press their keys.' },
     { id = 'tp_galaxy', label = 'Third person at the galactic map', toggle = true, def = true,
       hint = 'Switches to the game camera while you use the galactic map.' },
     { id = 'tp_pod', label = 'Third person in the hellpod', toggle = true, def = true,
       hint = 'Switches to the game camera when you climb into the hellpod on the ship, and in the drop until you step out of the pod.' },
     { id = 'tp_term', label = 'Third person at terminals', toggle = true, def = true,
       hint = 'Switches to the game camera while you use a mission terminal, and back when you step off it.' },
-    { id = 'messages', label = 'On-screen messages', toggle = true, def = true, global = true,
-      hint = 'Shows FIRST PERSON ON or OFF and the profile number for a moment when you press their keys.' },
+    { head = '(Experimental, report issues!)', note = true },
     { id = 'tp_menus', label = 'Third person for map and stratagems', toggle = true, def = false,
       hint = 'Switches to the game camera while you hold the map or stratagem key (set them on the KEYS tab).' },
   } },
@@ -2356,6 +2357,8 @@ local function draw_panel(dt)
     ry = ry - (r.head and HH or RH)
     local off = tby - floor(8 * s) + P.scroll - ry  -- this row's bottom, from the top of the list
     if off - (r.head and HH or RH) < P.scroll - 1 or off > P.scroll + fit + 1 then  -- scrolled out
+    elseif r.note then  -- gray remark over the rows below it (a heading row, so the arrows skip it)
+      chef.text(rx + floor(8 * s), ry + floor(10 * s), r.head, sp, col(150, 150, 160, 255), L + 3)
     elseif r.head then
       chef.text(rx + floor(8 * s), ry + floor(10 * s), r.head, sp, Y(), L + 3)
       chef.rect(rx + floor(16 * s) + chef.text_width(r.head, sp), ry + floor(14 * s), rw - floor(24 * s) - chef.text_width(r.head, sp),
