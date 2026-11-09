@@ -1898,16 +1898,29 @@ local function place(w)
       k.gp = { cx, cy, cz }  -- the game's own spot, put back at a hand-off
       if k.wx and not k.main then k.main = true; log('camera %d is the game view camera', ci) end
       -- a scope sits in front of the eye; a third-person camera squeezed in by the ground (aiming on your back,
-      -- looking sideways) comes from behind the head and flipped scope/ours every few frames (clip 2026-11-07)
+      -- looking sideways) sits beside or behind the head (-0.38 to +0.05 m ahead, logs to 1.0.31); real scopes 0.2-0.3 m ahead
       local al = 1
       if d < 0.4 then
         local fx, fy, fz = xyz(call('Quaternion.forward', call('Camera.local_rotation', cam)))
         if fx then al = (cx - hx) * fx + (cy - hy) * fy + (cz - hz) * fz end
       end
       local warp = S.warp and S.t - S.warp < 1 and (S.fall_t or 0) == 0 and not (S.frv or S.mech or S.empl or S.tank)
-      state = d < 0.4 and al > -0.05 and 'scope' or d > 8 and not warp and 'far' or 'ours'
+      -- in a backward dive's air part it is always the squeezed one (0.12-0.14 m ahead, 1.0.32 log), never a scope
+      local air = S.diving == 'dive_hide_back' and not S.oblie
+      state = d < 0.4 and al > 0.1 and not air and 'scope' or d > 8 and not warp and 'far' or 'ours'
       if state ~= k.state and d < 0.4 then log('camera %d: %.2f m from the head, %.2f m ahead', ci, d, al) end
-      if k.main then S.gcx, S.gcy, S.gcz = cx, cy, cz end  -- the game's own camera: the line it shoots along
+      if k.main then
+        S.gcx, S.gcy, S.gcz = cx, cy, cz  -- the game's own camera: the line it shoots along
+        -- lying or diving the floor squeezes it in and out frame to frame and the aim fix turned the view with it
+        -- (aiming on your back looking down-right, 2026-11-09): hold its offset from the root steady there (0.15 s)
+        local rx, ry, rz = S.trx, S.try, S.trz
+        if rx and (S.diving or S.stance == 'prone') then
+          local o, g = S.go, 1 - exp(-(S.dt or 0) / 0.15)
+          if not o then o = { cx - rx, cy - ry, cz - rz }; S.go = o end
+          o[1], o[2], o[3] = o[1] + (cx - rx - o[1]) * g, o[2] + (cy - ry - o[2]) * g, o[3] + (cz - rz - o[3]) * g
+          S.gcx, S.gcy, S.gcz = rx + o[1], ry + o[2], rz + o[3]
+        else S.go = nil end
+      end
       if state == 'far' and mfx and mx then
         -- take it only when the mech frame puts it where the game shows the view (so it is the mech's camera)
         local c = chef.camera()
