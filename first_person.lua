@@ -1409,8 +1409,9 @@ local function check_player(w)
   local live = {}
   for _, p in ipairs(S.parts) do if chef.unit_alive(p.u) then live[#live + 1] = p end end
   if #live < #S.parts then S.parts = live; table.insert(S.rescans, 1, S.t + 1) end
-  -- in a hellpod on the ship, or its cutscene: no scans (the launch makes and removes units all at once)
-  if S.nopod and not chef.in_mission() then return end
+  -- in a hellpod on the ship, or its cutscene: no scans (the launch makes and removes units all at once). Nor at the
+  -- galactic table: a scan from its far camera found nobody, lost the Helldiver, and S.away could never clear again
+  if (S.nopod or S.away or S.galaxy) and not chef.in_mission() then return end
   if not S.head then
     -- right after your hellpod is seen: look every half second, so first person comes on as it lands
     local every = drop_seen() and 0.5 or 3
