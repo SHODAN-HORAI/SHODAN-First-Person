@@ -366,6 +366,8 @@ local TABS = {
       hint = 'With Correct for enemies (AIM tab): an enemy nearer than this lines up here instead, so the view is not thrown about up close.' },
     { id = 'mech_glide', label = 'Glide to a new distance', min = 0, max = 5, step = 0.5, def = 2, unit = ' s', zero = 'QUICK',
       hint = 'COCKPIT view: a new enemy distance is reached over this long, eased in and out. QUICK = a quarter second.' },
+    { id = 'mech_clip', label = 'Cut the cockpit', min = 0, max = 2, step = 0.05, def = 0, unit = ' m', zero = 'OFF',
+      hint = 'Nothing nearer the view than this is drawn in this mech: the cockpit frame and glass (about 0.6), the arm housing beside GUN LINE (about 1.2). Works on every mech, no extra files.' },
     { id = 'mech_wide', label = 'Keep the widest field of view', toggle = true, def = true,
       hint = 'The game narrows the view while the mech aims. On = first person keeps the widest seen in this mech (Field of view at SAME and GAME).' },
     { head = 'EMPLACEMENT' },
@@ -2481,7 +2483,8 @@ local function place(w)
             if not k.qw then view_limit(k, cam, S.dt or 0.016) end
             if not (k.qw or k.yq) then k.qlog = nil; aim_fix(k, cam, S.dt or 0.016) end
           end
-          local nr = V.near
+          -- Cut the cockpit (MECHS tab): a mech's own near range clears its frame and arm housing from the view
+          local nr = S.mech and V[S.mech_pre .. 'mech_clip'] > 0 and V[S.mech_pre .. 'mech_clip'] or V.near
           if nr > 0 then
             k.near0 = k.near0 or call('Camera.near_range', cam)
             call('Camera.set_near_range', cam, nr)
