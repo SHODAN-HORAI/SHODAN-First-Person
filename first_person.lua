@@ -3442,7 +3442,7 @@ local function update_act()
   elseif V.tp_term and S.term then why = 'terminal'
   elseif V.tp_menus and S.map_open then why = 'map'
   elseif V.tp_menus and S.strat_open then why = 'stratagems'
-  elseif V.tp_down and S.down and not S.pod and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) then why = 'knocked down'  -- seats look like lying down
+  elseif V.tp_down and S.kdown and not S.pod then why = 'knocked down'  -- the game's ragdoll layer (HUD.daze)
   elseif S.pel and (not V.pelican_fp or S.pel_gone) then why = 'Pelican'
   elseif S.tank and (S.tank.seat == 'crew' and not V.tgun_fp or S.tank.seat == 'driver' and not V.tdrv_fp
     or S.tank.seat ~= 'crew' and S.tank.seat ~= 'driver' and V[S.tank.tp]) then why = 'tank ' .. tostring(S.tank.seat)
@@ -3951,13 +3951,38 @@ function HUD.lean(dt)
   if abs(S.tilt) > 0.3 then S.tmax = max(S.tmax or 0, abs(S.tilt))
   elseif S.tmax then log('sprint tilt: leaned up to %.1f deg', S.tmax); S.tmax = nil end
 end
--- Knockdown daze (CAMERA tab, DEATH): a knockdown (S.down, see stance(); not in seats) blurs and darkens the screen
--- at once, holds 0.4 s and clears by 1.8 s. The game's own blur strength (the death effect raises it, this doesn't).
--- A death takes over at once
+-- Knockdown daze (CAMERA tab, DEATH): being thrown blurs and darkens the screen at once, holds 0.4 s and clears by
+-- 1.8 s. The game's own blur strength (the death effect raises it, this doesn't). A death takes over at once.
+-- Thrown = the game's own ragdoll layer, not S.down's head-height guess (that fired sitting in a mech, leaving it, and
+-- lying prone looking back, log 2026-11-11): the 31st value of Unit.animation_get_state (avatar_helldiver's last layer,
+-- names from its state machine): 5 Ragdoll/Kinematic = animated as usual, 11 Ragdoll/Ragdoll = thrown, 7
+-- Ragdoll/Land_knockdown = landing from it. Asked 20 times a second with the state machine checked the same frame
+-- (asking a torn-down one crashed the game, see HUD.dying); not while the game camera falls (as anim()) or in the pod
 HUD.DAZE = 1.8
+HUD.RAG = { [7] = true, [11] = true }
+HUD.RAGN = { [0] = 'Dead', 'Death_Powered', 'Falling', '3', 'Frozen', 'Kinematic', '6', 'Land_knockdown', 'Legs_Disabled',
+  'Powered', 'Powered_Downed', 'Ragdoll', 'Vehicle', 'Vehicle_aim' }
+function HUD.ragdoll()
+  local h = S.head
+  if not (h and chef.in_mission()) or S.dead or S.pod or S.nopod then S.rag = nil; return false end
+  -- camera falling (a throw can do it): the last read stands, so one knockdown doesn't start twice
+  if (S.calm_t or 0) >= 0.5 and not (S.rag_t and S.t - S.rag_t < 0.05 and S.t >= S.rag_t) then
+    S.rag_t = S.t
+    if UnitApi and UnitApi.animation_get_state and chef.unit_alive(h.u) and call('Unit.has_animation_state_machine', h.u) == true then
+      local st = { pcall(UnitApi.animation_get_state, h.u) }
+      local r = st[1] and st[32] or nil
+      if r ~= S.rag then log('ragdoll layer: %s -> %s', tostring(HUD.RAGN[S.rag] or S.rag), tostring(HUD.RAGN[r] or r)); S.rag = r end
+    end
+  end
+  return HUD.RAG[S.rag] or false
+end
 function HUD.daze()
-  local down = S.down and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) or false
-  if down and not S.dzd and V.daze and (S.on or S.keep == true) and chef.in_mission() and not S.dying then
+  local rag = (V.daze or V.tp_down) and HUD.ragdoll() or false
+  -- S.kdown (Third person when knocked down, update_act): thrown, then lying until the head is back up to crouch
+  -- height (the ragdoll layer turns back to Kinematic as the get-up starts)
+  S.kdown = rag or S.kdown and S.stance == 'prone' and not (S.dead or S.pod or S.nopod) and chef.in_mission() or false
+  local down = V.daze and (S.on or S.keep == true) and rag or false
+  if down and not S.dzd and not S.dying then
     S.dz0 = S.t; log('knockdown daze: start')
   end
   S.dzd = down
