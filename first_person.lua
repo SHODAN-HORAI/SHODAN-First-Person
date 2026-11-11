@@ -110,10 +110,6 @@ local TABS = {
       hint = 'Shows FIRST PERSON ON or OFF and the profile number for a moment when you press their keys.' },
     { id = 'tp_galaxy', label = 'Third person at the galactic map', toggle = true, def = true,
       hint = 'Switches to the game camera while you use the galactic map.' },
-    { id = 'tp_pod', label = 'Third person in the hellpod', toggle = true, def = true,
-      hint = 'Switches to the game camera from the moment you use the hellpod on the ship until you climb out, and in the drop until you step out of the pod.' },
-    { id = 'pod_land_fp', label = 'First person once landed', toggle = true, def = false,
-      hint = 'With Third person in the hellpod on: the game camera for the fall only, first person inside the pod 0.5 s after it lands (the body is still left alone: no animation questions until you step out).' },
     { id = 'tp_term', label = 'Third person at terminals', toggle = true, def = true,
       hint = 'Switches to the game camera while you use a mission terminal, and back when you step off it.' },
     { id = 'term_fov', label = 'Terminal field of view change', min = -40, max = 40, step = 1, def = 0, unit = ' deg', zero = 'SAME',
@@ -3147,7 +3143,8 @@ local function game_view_far(x, y, z)
   if known then return far end
 end
 
--- hellpods, whatever the settings (tp_pod only picks the view, every frame, before anything asks the body):
+-- hellpods (the view, fixed (user): the game's from using the pod on the ship through the fall, first person 0.5 s
+-- after the mission pod lands; picked every frame, before anything asks the body):
 -- S.pod   in a hellpod. Ship: the head down at prone height (nothing else on the ship lays you down, 2026-11-07),
 --         from climbing in until the ship unloads. Mission: the drop, from the game camera falling 25+ m/s for
 --         0.25 s until you step out of the landed pod (1.5 m from where it landed, or 6 s after landing)
@@ -3278,10 +3275,10 @@ end
 
 -- each FRV seat's own Third person row (the model's prefix in front)
 local FRV_TP = { driver = 'frv_tpd', passenger = 'frvp_tp', gunner = 'frvg_tp' }
--- First person once landed: the mission pod 0.5 s after it lands (still the pod: S.pod keeps the body left alone)
+-- first person in the mission pod 0.5 s after it lands (still the pod: S.pod keeps the body left alone)
 local function pod_landed_fp()
   local d = S.mdrop
-  return V.pod_land_fp and chef.in_mission() and d ~= nil and d.land ~= nil and S.t - d.land >= 0.5 or false
+  return chef.in_mission() and d ~= nil and d.land ~= nil and S.t - d.land >= 0.5 or false
 end
 local function update_act()
   local why
@@ -3289,7 +3286,7 @@ local function update_act()
   elseif S.dead then why = 'dead'
   elseif binds.peek and binds.peek.down() and not S.panel then why = 'peek key'
   elseif V.tp_galaxy and S.galaxy then why = 'galactic map'
-  elseif V.tp_pod and (S.puse or S.pod) and not pod_landed_fp() then why = 'hellpod'  -- user: the game's own view from using a pod
+  elseif (S.puse or S.pod) and not pod_landed_fp() then why = 'hellpod'  -- user: the game's own view from using a pod
   elseif S.away and not chef.in_mission() then why = 'game camera away'  -- whatever the settings (the cutscene)
   elseif V.tp_term and S.term then why = 'terminal'
   elseif V.tp_menus and S.map_open then why = 'map'
@@ -3784,7 +3781,9 @@ local function death_check()
     end
   end
   local h = S.head
-  if S.dead and h and not is_corpse(h.u) and not lying and not S.pod then S.dead = false; log('up: first person again') end
+  -- in the reinforcement pod the new Helldiver counts as up (its pod pose isn't lying): the hellpod view rule takes over
+  -- there, as on the mission's first drop (it waited for the step out)
+  if S.dead and h and not is_corpse(h.u) and (S.pod or not lying) then S.dead = false; log('up: first person again%s', S.pod and ' (in the pod)' or '') end
   if not S.dead then S.dsure, S.dead_u = nil, nil end
 end
 
@@ -4072,14 +4071,14 @@ local function step(dt)
   S.dt = dt
   death_check()
   pod_guard(dt)
-  -- the game's view on the ship (its cutscene camera, or in a pod with Third person in the hellpod): the body isn't
+  -- the game's view on the ship (its cutscene camera, or in a pod): the body isn't
   -- followed until it's back
-  local ship_off = not chef.in_mission() and (S.away or S.pod and V.tp_pod)
+  local ship_off = not chef.in_mission() and (S.away or S.pod)
   -- (and while gliding out after switching off: else the glide heads for the spot the head was at the key press)
   if (S.on or S.bw > 0) and S.head and not ship_off then target(dt) end
   if S.on and V.tp_galaxy then galaxy_check(dt) else S.galaxy = false end   -- every frame: the head shows at once
   if S.on and (V.tp_term or V.term_fov ~= 0 or V.term_face) then term_check() else S.term = false end
-  if S.on and V.tp_pod then pod_check() else S.puse = false end
+  if S.on then pod_check() else S.puse = false end
   menu_check()
   update_act()
   glide(dt)
