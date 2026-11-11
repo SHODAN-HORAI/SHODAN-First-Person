@@ -2040,7 +2040,12 @@ local function target(dt)
   local vz = (S.fzp and dt > 0) and (rz - S.fzp) / dt or 0
   S.fzp = rz
   if not foot or abs(vz) > 2 then S.gnd_t = S.t end
-  if not foot then S.gnd = nil elseif S.t - (S.gnd_t or -10) >= 0.3 then S.gnd = rz end
+  if foot and abs(vz) > 2 then S.air_t = S.t end  -- feet falling or climbing (on foot only)
+  -- glides there (0.15 s): set in one frame, every step down turned the view at once 0.3 s after landing (2026-11-11)
+  S.gwt = (S.gwt or 0) + ((foot and 1 or 0) - (S.gwt or 0)) * (1 - exp(-dt / 0.2))
+  -- follows the feet through drops too: held, it stepped down 0.3 s after every landing and turned the view looking
+  -- down (2026-11-11); falling, the game camera drops with the feet, so the aim line barely moves
+  if S.frv or S.mech or S.empl or S.tank or S.gator or S.pel then S.gnd = nil elseif foot then S.gnd = S.gnd and S.gnd + (rz - S.gnd) * (1 - exp(-dt / 0.15)) or rz end
   -- offsets along the level view, height straight up: looking up or down no longer carries the view up into the gun
   -- or down into the chest; on foot, looking down pushes it forward instead
   local ux, uy = fx / hl, fy / hl
@@ -2048,6 +2053,37 @@ local function target(dt)
   S.tx = rx + S.sm[1] + bbx + ux * f + uy * sd + vx * vf + vy * vs + fx * cl
   S.ty = ry + S.sm[2] + bby + uy * f - ux * sd + vy * vf - vx * vs + fy * cl
   S.tz = rz + S.sm[3] + bbz + up
+  -- the view sinks at most 2 m/s over the feet (rising is free, so nothing ever pops): landing off a ledge dipped the
+  -- head 0.6 m in 0.1 s and back, and 1.2.24's landing hold, catching it late, popped the view 0.34 m (log 2026-11-11).
+  -- A head dropping faster than 2.5 m/s over the feet right after landing (dips 2.7-5.9, knocked flat ~10) holds the
+  -- height until the head has been back up 0.5 s, at most 2.5 s: the game dips the head again 0.2 s after you're
+  -- back up, and 0.1 s let the view follow that second dip (log 2026-11-11, 1170.8 s). Dives sink at 8 m/s
+  -- (they track the head tight); seats and big jumps start over
+  local seated = S.frv or S.mech or S.empl or S.tank or S.gator or S.pel
+  local z, hh, p = S.tz - rz, hz - rz, S.vh
+  -- a warp too (getting into a car: the head drops 0.4 m in the warp frame, the hold kept the view at standing height
+  -- for 2.2 s, user 2026-11-11)
+  if p and not seated and S.t - p.t < 0.2 and abs(z - p.z) < 2 and S.t - (S.warp or -9) > 0.6 then
+    p.hm = max(hh, p.hm - dt)  -- the head's height a moment ago (falls 1 m/s, so a fast drop leaves it behind)
+    local hs = dt > 0 and (hh - p.hh) / dt or 0  -- raw: the eased speed caught the dip 0.25 m late
+    if not p.hold and not S.diving and hs < -2.5 and S.t - (S.gnd_t or -9) < 0.4 then  -- just landed: not going prone
+      p.hold, p.href = S.t, p.hm; log('view held: head dropping %.1f m/s (%.2f -> %.2f m)', -hs, p.hm, hh)
+    end
+    if p.hold then
+      p.up = hh > p.href - 0.1 and (p.up or 0) + dt or 0
+      p.back = p.back or p.up > 0
+      -- back up once, then low and still 0.12 s: you crouched (it held the view 1.4 s, log 1421.3 s); the game's dips don't stop
+      p.lo = p.back and p.up == 0 and abs(S.ozv or 0) < 0.3 and (p.lo or 0) + dt or 0
+      if p.up > 0.5 or p.lo > 0.12 or S.t - p.hold > 2.5 or S.diving then log('view free (%.1f s%s)', S.t - p.hold, p.lo > 0.12 and ', crouched' or ''); p.hold, p.up, p.back, p.lo = nil, nil, nil, nil end
+    end
+    -- held at your standing height, not the higher in-air one: holding that, the view dropped 0.13 m when it let
+    -- go 1-2 s after landing (log 2026-11-11); it settles there during the landing instead
+    if not p.hold and S.stance == 'stand' and S.t - (S.air_t or -9) > 0.5 then p.zs = p.zs and p.zs + (z - p.zs) * (1 - exp(-dt / 0.3)) or z end
+    local held = p.hold and (p.zs and p.z > p.zs and p.zs + (p.z - p.zs) * exp(-dt / 0.2) or p.z)
+    z = max(z, held or p.z - (S.diving and 8 or 2) * dt)
+  else p = { hm = hh }; S.vh = p end
+  p.z, p.t, p.hh = z, S.t, hh
+  S.tz = rz + z
   S.trx, S.try, S.trz = rx, ry, rz  -- the root this view was built from (the draw pass moves it along)
   S.thx, S.thy, S.thz = hx, hy, hz
 end
@@ -2389,7 +2425,7 @@ local function aim_fix(k, cam, dt)
   S.ab = S.aim and min(1, (S.ab or 0) + dt * rate) or max(0, (S.ab or 0) - dt * rate)
   local ab = S.ab
   if S.aw <= 0 or not (S.ad and S.gcx and dx) then
-    if S.aw <= 0 then S.ad, S.hr, GR.d, GR.st, S.gund = nil, nil, nil, {}, nil end
+    if S.aw <= 0 then S.ad, S.hr, GR.d, GR.st, S.gund, S.ce = nil, nil, nil, {}, nil, nil end
     if mine then call('Camera.set_local_rotation', cam, k.u, base) end
     k.last = nil
     return
@@ -2403,7 +2439,8 @@ local function aim_fix(k, cam, dt)
   -- (on a ledge over an enemy, the feet's level is mid-air)
   local dv, dh = S.ad, S.ad
   local tg = not (S.hr and S.hr.d) and ground_dist(dz, S.ad)
-  if tg then dv = tg; dh = 1 / (1 / S.ad + ab * (1 / tg - 1 / S.ad)) end
+  -- S.gwt: the ground point's pull, faded in and out (switched in one frame it turned the view 7 deg as a dive ended)
+  if tg then local gw = S.gwt or 0; dv = 1 / (1 / S.ad + gw * (1 / tg - 1 / S.ad)); dh = 1 / (1 / S.ad + ab * gw * (1 / tg - 1 / S.ad)) end
   local vx, vy, vz = S.gcx + dv * dx - k.wx, S.gcy + dv * dy - k.wy, S.gcz + dv * dz - k.wz
   local vl = sqrt(vx * vx + vy * vy)
   if vl * vl + vz * vz < 0.25 then return end
@@ -2427,6 +2464,29 @@ local function aim_fix(k, cam, dt)
   -- full turn leaves the shots far off the crosshair (0.3.103 at strength 5)
   local w = S.aw * (1 + ab * (V.aim_strength / 10 - 1))
   local fx, fy, fz = dx + w * (hx - dx), dy + w * (hy - dy), dz + w * (hz - dz)
+  -- the turn itself (across and up from the game's look) changes at most 30 deg/s: the ground point, an enemy or
+  -- the camera hold switching made it jump up to 7 deg in one frame on landings and get-ups (log 2026-11-11).
+  -- The mouse still moves the view at once (it moves the game's look this turn is measured from)
+  local hd = sqrt(dx * dx + dy * dy)
+  if hd > 1e-3 then
+    local rx, ry = dy / hd, -dx / hd
+    local ux, uy, uz = ry * dz, -rx * dz, rx * dy - ry * dx
+    -- over the along-look part, so rebuilding d + er*r + eu*u points exactly where f did (a 17 deg turn came out 16.3)
+    local fd = max(1e-3, fx * dx + fy * dy + fz * dz)
+    local er, eu = (fx * rx + fy * ry) / fd, (fx * ux + fy * uy + fz * uz) / fd
+    local ce = S.ce or { er, eu }
+    local mr, mu = er - ce[1], eu - ce[2]
+    -- held still from the moment your feet drop until the landing hold lets go: the game camera's bounce turned the
+    -- view looking down, and frozen only from the landing it kept the falling value and moved 1-2 s later (2026-11-11)
+    -- then eased out over ~0.5 s: at 30 deg/s the 0.2 deg it was off snapped up in 0.05 s when the hold let go (1800.2 s)
+    local frz = (S.vh and S.vh.hold) or S.t - (S.air_t or -9) < 0.4
+    if frz then S.cfz = S.t end
+    local ml, st = sqrt(mr * mr + mu * mu), frz and 0 or math.rad(30) * dt
+    if not frz and S.t - (S.cfz or -9) < 1 then st = min(st, ml * (1 - exp(-dt / 0.3))) end
+    if ml > st then ce[1], ce[2] = ce[1] + mr * st / ml, ce[2] + mu * st / ml else ce[1], ce[2] = er, eu end
+    S.ce = ce
+    fx, fy, fz = dx + ce[1] * rx + ce[2] * ux, dy + ce[1] * ry + ce[2] * uy, dz + ce[2] * uz
+  end
   local nq = call('Quaternion.look', Vec(fx, fy, fz), Vec(0, 0, 1))
   local _, err = call('Camera.set_local_rotation', cam, k.u, nq)
   if err then once('aw' .. tostring(err), 'aim fix: rotation write refused: %s', tostring(err)) else wrote(k, nq) end
