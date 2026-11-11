@@ -126,6 +126,8 @@ local TABS = {
       hint = 'When you die, the view on your body blurs in and out in slow swells for about 4 s, then cuts to black until your reinforcement drops in or the camera moves to a teammate.' },
     { id = 'death_blink', label = 'Death effect: blinking', toggle = true, def = true, global = true,
       hint = 'With Death effect on: your eyes blink at random, often several times in quick succession, then close before the black.' },
+    { id = 'daze', label = 'Knockdown daze', toggle = true, def = true, global = true,
+      hint = 'When a blast or a hit knocks you down, the view blurs and darkens at once and clears over about 2 s. Only drawn over the screen: the view itself is not moved.' },
   } },
   { name = 'AIM', rows = {
     { head = 'VIEW WHILE AIMING' },
@@ -3711,11 +3713,31 @@ function HUD.death()
     end
   end
 end
+-- Knockdown daze (CAMERA tab, DEATH): a knockdown (S.down, see stance(); not in seats) blurs and darkens the screen
+-- at once, holds 0.4 s and clears by 1.8 s. The game's own blur strength (the death effect raises it, this doesn't).
+-- A death takes over at once
+HUD.DAZE = 1.8
+function HUD.daze()
+  local down = S.down and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) or false
+  if down and not S.dzd and V.daze and (S.on or S.keep == true) and chef.in_mission() and not S.dying then
+    S.dz0 = S.t; log('knockdown daze: start')
+  end
+  S.dzd = down
+  if not S.dz0 then return end
+  local t = S.t - S.dz0
+  if t >= HUD.DAZE or S.dying or not V.daze then S.dz0 = nil; return end
+  local a = t < 0.15 and t / 0.15 or t < 0.4 and 1 or 1 - (t - 0.4) / (HUD.DAZE - 0.4)
+  a = a * a * (3 - 2 * a)
+  local sw, sh = chef.screen()
+  HUD.blur(0.85 * a, sw, sh)
+  chef.rect(0, 0, sw, sh, col(0, 0, 0, floor(70 * a)), chef.TOP + 81)
+end
 -- everything drawn over the game each update: the Mech HUD, the death effect, the knockdown daze (and the sprint
 -- tilt's lean: not a drawing, it only needs this once-per-update call)
 function HUD.overlays(dt)
   HUD.read()
   HUD.draw()
+  HUD.daze()
   HUD.death()
 end
 
