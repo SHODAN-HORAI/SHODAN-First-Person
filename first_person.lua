@@ -3014,6 +3014,8 @@ local function place(w)
       -- a seat whose game camera sits far off (the Pelican's outside shot, a tank crew seat, the Gator) and where you
       -- chose first person: written like a near one
       if state == 'far' and (S.pel_seat or S.tcrew or S.gator) and not mfx then state = 'ours' end
+      -- gliding out to the galactic table: follow the game's camera all the way out (a 'far' hand-off cut the glide)
+      if state == 'far' and k.main and S.galaxy and S.bw > 0 then state = 'ours' end
       if state ~= k.state and d < 0.4 then log('camera %d: %.2f m from the head, %.2f m ahead', ci, d, al) end
       if k.main then
         S.gcx, S.gcy, S.gcz = cx, cy, cz  -- the game's own camera: the line it shoots along
@@ -3251,12 +3253,21 @@ local function galaxy_check(dt)
     rx, ry, rz = upos(h.u, h.root)
     hz = select(3, upos(h.u, h.node))
   end
-  local at = rx and hz and abs(rx - TABLE[1]) < 0.3 and abs(ry - TABLE[2]) < 0.3 and abs(rz - TABLE[3]) < 0.3
+  local lean = rx and hz and abs(rx - TABLE[1]) < 0.3 and abs(ry - TABLE[2]) < 0.3 and abs(rz - TABLE[3]) < 0.3
     and hz - rz < 1.6 and anim(h.u) == 0  -- 0 = standing still (1 walk, 3 start, 5/6 stop)
+  -- the moment you use it, before the lean (the game's camera often left first: a cut, 5 of 16 uses, logs 2026-11-11):
+  -- the table's own animation starting (layer 8 state 223, 1.0.27 log) or the game's camera leaving the head, within
+  -- 2 m of the spot. Starts only (223 can stay on until you walk off): the lean holds it after 1.5 s
+  local near = rx and abs(rx - TABLE[1]) < 2 and abs(ry - TABLE[2]) < 2 and abs(rz - TABLE[3]) < 2
+  local st9 = near and select(9, anim(h.u, true)) or nil
+  local start = near and not S.galaxy and (st9 == 223 and S.st9 ~= 223 and 'its animation' or S.away and not S.gaway and 'game camera away')
+  S.st9, S.gaway = st9, S.away
+  local at = lean or start or near and S.galaxy and S.t - S.gal_on < 1.5 or false
   S.gal_off = at and 0 or (S.gal_off or 0) + dt
   if at and not S.galaxy or S.galaxy and S.gal_off > 0.25 then
-    S.galaxy = at
-    log('galactic map %s (head %s above feet)', at and 'in use' or 'left', hz and rz and string.format('%.2f m', hz - rz) or '?')
+    S.galaxy, S.gal_on = at, S.t
+    log('galactic map %s (%shead %s above feet)', at and 'in use' or 'left', at and (start or 'leaning over it') .. ', ' or '',
+      hz and rz and string.format('%.2f m', hz - rz) or '?')
   end
 end
 
