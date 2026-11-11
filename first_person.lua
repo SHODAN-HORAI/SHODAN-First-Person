@@ -516,12 +516,22 @@ local function raw_anim(ok, ...)
 end
 -- all = every layer's state: chef.call passes on only the first 4, so the engine is called straight. That skips the
 -- loader's guard, so never down, dead or in a hellpod, and inside a pcall (the ship too: the pod check needs it)
--- every body known dead in this mission, not just the latest: a second death let the first corpse be picked again
--- (its tallest height measured lying, so it read as standing and first person went into it)
-local function is_corpse(u) return u ~= nil and (u == S.corpse or (S.corpses ~= nil and S.corpses[u] == true)) end
+-- corpses, never picked as yours:
+--   proven (the body's animation gone): every one in the mission, not just the latest (a second death let the first
+--     corpse be picked again: its tallest height measured lying, so it read as standing). Dropped once the unit is
+--     gone, since the engine hands handles out again
+--   guessed (lying when the cameras changed, or lost while lying): only the latest, in S.corpse. A proven death never
+--     replaces it, and the body standing up again releases it, so a living body taken for dead isn't shut out for good
+local function proven(u) return u ~= nil and S.corpses ~= nil and S.corpses[u] == true end
+local function is_corpse(u) return u ~= nil and (u == S.corpse or proven(u)) end
 local function mark_corpse(u)
-  S.corpse = u
-  if u ~= nil then S.corpses = S.corpses or {}; S.corpses[u] = true end
+  if u == nil then return end
+  S.corpses = S.corpses or {}; S.corpses[u] = true
+  if S.corpse == nil or proven(S.corpse) then S.corpse = u end
+end
+local function prune_corpses()
+  for u in pairs(S.corpses or {}) do if not chef.unit_alive(u) then S.corpses[u] = nil end end
+  if S.corpse ~= nil and not chef.unit_alive(S.corpse) then S.corpse = nil end
 end
 local function anim(u, all)
   if not u or S.nopod then return nil end
@@ -531,7 +541,7 @@ local function anim(u, all)
   if S.down_any and chef.in_mission() and (S.atrace or 0) <= S.t then S.atrace = S.t + 0.5; log('asking the animation while down') end
   local has, why = call('Unit.has_animation_state_machine', u)
   if has == false then
-    if S.head and u == S.head.u and not S.dead and chef.in_mission() then S.dead = true; log('the body has no animation left (dead): game camera') end
+    if S.head and u == S.head.u and not S.dead and chef.in_mission() then S.dead, S.dead_u = true, u; log('the body has no animation left (dead): game camera') end
     -- certain: the body's animation is gone. It's the corpse from now on (never picked, never 'up' again)
     if S.head and u == S.head.u and S.dead then S.dsure = 'anim'; mark_corpse(u) end
     return nil
@@ -1075,7 +1085,18 @@ local function others_here() return chef.in_mission() and (chef.players and chef
 local function scan_done(near)
   local c = chef.camera()
   if not c then return end
+  prune_corpses()
   local best, bd = nil, 6
+  -- a corpse standing again (head well over its feet) isn't one: a guess was alive after all; a proven one (its
+  -- animation gone) only with an animation again (the handle handed out to a new unit, or the engine's answer was
+  -- wrong), asked only of a standing body near the camera, at scan rate
+  local function back_up(h)
+    if not is_corpse(h.u) or not h.z then return false end
+    local fz = select(3, upos(h.u, chef.unit_node(h.u, 'root') or 1))
+    if not (fz and h.z - fz > 1.4) then return false end
+    if proven(h.u) and call('Unit.has_animation_state_machine', h.u) ~= true then return false end
+    return true
+  end
   -- ship: your Helldiver (S.mine) while it's there, never a teammate's (nothing on the ship gives you a new one)
   local gate = others_here() and not drop_seen()
     or not chef.in_mission() and S.mine ~= nil and chef.unit_alive(S.mine)
@@ -1098,7 +1119,7 @@ local function scan_done(near)
         chef.players(), S.fall_max or 0)
     end
     if fresh and not fell(h) then teammate = true end
-    if h.x and h.bone == 'head' and h.kind == AVATAR_KIND and not is_corpse(h.u) and not teammate then  -- never back into a dead body
+    if h.x and h.bone == 'head' and h.kind == AVATAR_KIND and (not is_corpse(h.u) or back_up(h)) and not teammate then  -- never back into a dead body
       local d = sqrt((h.x - c.x) ^ 2 + (h.y - c.y) ^ 2 + (h.z - c.z) ^ 2)
       -- several pods at once (a group reinforcement): the one the camera followed down most wins, then the nearest
       local f = fresh and (S.avfollow[h.u] or 0) or 0
@@ -1114,6 +1135,11 @@ local function scan_done(near)
         S.avfollow[best.u] or 0)
       S.avfollow = {}
       S.drop_t = nil
+    end
+    if is_corpse(best.u) then
+      log('the body taken for dead is standing%s: yours again', proven(best.u) and ' with an animation' or '')
+      if S.corpses then S.corpses[best.u] = nil end
+      if S.corpse == best.u then S.corpse = nil end
     end
     S.mine = best.u
     S.head = { u = best.u, node = best.node, root = chef.unit_node(best.u, 'root') or 1 }
@@ -1215,10 +1241,11 @@ local function check_player(w)
       lost = (not x and not bad_now(h.u)) or (x and chef.in_mission() and not ours and not S.galaxy and c and (x - c.x) ^ 2 + (y - c.y) ^ 2 + (z - c.z) ^ 2 > 36)
     end
     if lost then
-      -- a sure death joins every corpse kept for the mission; a guess (lying, cameras changed) only the latest slot,
-      -- which the next corpse replaces, so a living body taken for dead isn't shut out for good
-      if S.dead and S.dsure then mark_corpse(h.u)
-      elseif S.dead or S.down_any then S.corpse = h.u end
+      -- only the body that died (the head can already be your reinforcement, picked while that death is still held
+      -- through the fall and the pod): a proven death for the mission, anything less the guessed slot
+      local died = S.dead and h.u == S.dead_u
+      if died and S.dsure == 'anim' then mark_corpse(h.u)
+      elseif died or S.stance == 'prone' or S.down or S.dive then S.corpse = h.u end
       S.head, S.parts = nil, {}
     end
   end
@@ -1705,7 +1732,8 @@ local function target(dt)
   if vu and seat then
     local a, b = chef.unit_rotation(vu)
     local l = (finite(a) and finite(b)) and sqrt(a * a + b * b) or 0
-    if l > 1e-4 then hull, vx, vy = true, a / l, b / l end
+    if l > 1e-4 then hull, vx, vy = true, a / l, b / l; S.hullf = { vx, vy, S.t, vu }
+    elseif S.hullf and S.hullf[4] == vu and S.t - S.hullf[3] < 0.25 then hull, vx, vy = true, S.hullf[1], S.hullf[2] end
   end
   -- the hull's frame eased in when it only becomes usable mid-seat (a tank settling after you climbed in): the
   -- offsets moved from the look's frame to the hull's in one frame, up to the whole offset. Entering a seat whose
@@ -2289,7 +2317,7 @@ local function set_act(act, why)
   -- off: the reason kept current (dying while gliding out of a knock-down cuts); coming on remembers the last one, so
   -- the glide in from the hellpod or a death cuts too
   if act == S.act then if not act then S.why = why end; return end
-  if act then S.inwhy = S.why end
+  if act then S.inwhy = S.why; S.gnd, S.gnd_t, S.fzp = nil, S.t, nil end  -- the ground measured afresh (it went stale)
   S.act, S.why = act, why
   -- hellpod: nothing written back, 0.25 s ease into the game's own camera and back out of it (not the glide)
   local pod = why == 'hellpod'
@@ -2311,14 +2339,16 @@ local CUT = { dead = true, hellpod = true, ['game camera away'] = true }  -- and
 local function glide(dt)
   local goal = S.act and 1 or 0
   if S.bw ~= goal then
-    -- in a hellpod, or the game camera falling at hellpod speed (the drop not recognized yet: 0.25 s of it); back from
-    -- a hellpod its own 0.25 s ease (S.pin) does it
+    -- in a hellpod, or the game camera falling at hellpod speed for 0.1 s (the drop not recognized yet: that takes
+    -- 0.25 s; a single frame's dip isn't a fall), or falling at all for the world's first switch-on (the mission's start);
+    -- back from a hellpod its own 0.25 s ease (S.pin) does it
     if V.blend <= 0 or CUT[goal == 1 and S.inwhy or S.why] or goal == 1 and S.offwhy == 'hellpod' or not S.head
-      or S.pod or S.puse or (S.pfall_t or 0) > 0 then S.bw = goal
+      or S.pod or S.puse or (S.pfall_t or 0) >= 0.1 or (S.pfall_t or 0) > 0 and not S.wglide then S.bw = goal
     elseif goal > S.bw then S.bw = min(1, S.bw + dt / V.blend)
     else S.bw = max(0, S.bw - dt / V.blend) end
     if abs(S.bw - goal) < 1e-9 then S.bw = goal end
   end
+  if S.bw >= 1 then S.wglide = true end
   local shown = S.bw >= 0.5
   if shown ~= S.shown then S.shown = shown; apply_hiding() end
   if S.bw <= 0 and S.handing then hand_back() end
@@ -2863,13 +2893,13 @@ local function death_check()
     for u in pairs(S.dcams or {}) do if not set[u] then changed = true end end
     S.dcams = set
     if changed and lying and not S.dead then
-      S.dead, S.dsure = true, S.down and true or false  -- knocked down: sure; prone or after a dive: a guess
+      S.dead, S.dsure, S.dead_u = true, S.down and true or false, S.head.u  -- knocked down: sure; prone or after a dive: a guess
       log('cameras changed while lying (%s): game camera until up', S.stance or '?')
     end
   end
   local h = S.head
   if S.dead and h and not is_corpse(h.u) and not lying and not S.pod then S.dead = false; log('up: first person again') end
-  if not S.dead then S.dsure = nil end
+  if not S.dead then S.dsure, S.dead_u = nil, nil end
 end
 
 -- give the camera and every hidden mesh back to the game and start again as in a new world: the next frame picks
@@ -2895,7 +2925,7 @@ local function carry()
   -- while that death is still held (the fall, the landed pod): it's yours and alive, so it's kept
   local c = { w = chef.world_id(), dead = S.dead or false, dsure = S.dead and S.dsure or nil, drop_t = S.drop_t,
     drop_held = S.drop_held, avtop = S.avtop,
-    avfollow = S.avfollow, corpse = S.corpse, corpses = S.corpses,
+    avfollow = S.avfollow, corpse = S.corpse, corpses = S.corpses, dead_u = S.dead and S.dead_u or nil,
     mine = not is_corpse(S.mine) and S.mine or nil }
   if S.head then c.body = { u = S.head.u, hmax = S.hmax, stance = S.stance, down = S.down } end
   S.carry = c
@@ -2971,11 +3001,12 @@ local function step(dt)
     S.dead, S.corpse, S.corpses, S.avs, S.av_gen, S.dgen, S.dcams = false, nil, nil, nil, nil, nil, nil
     S.mine, S.drop_t, S.fall_t, S.lcz, S.fall_max, S.avtop, S.avfollow = nil, nil, 0, nil, 0, {}, {}
     S.drop_held = nil
-    S.dsure, S.shipfov = nil, nil
+    S.dsure, S.shipfov, S.dead_u, S.wglide = nil, nil, nil, nil
     local c = S.carry
     if c and c.w == S.world then
       S.dead, S.dsure, S.drop_t, S.corpse, S.corpses, S.mine = c.dead, c.dsure, c.drop_t, c.corpse, c.corpses, c.mine
       S.drop_held, S.avtop, S.avfollow, S.body_kept = c.drop_held, c.avtop, c.avfollow, c.body
+      S.dead_u = c.dead_u
     else
       S.body_kept = nil
     end
