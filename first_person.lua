@@ -379,6 +379,8 @@ local TABS = {
   } },
   { name = 'MECHS', rows = {
     { head = 'MECH' },
+    { id = 'cockpit_look', global = true, label = 'Cockpit', min = 1, max = 2, step = 1, def = 1, names = { 'GLASS', 'FULLY CLEAR' },
+      hint = 'Every exosuit, with the Glass cockpit option ticked in Arsenal: while you sit in it the cockpit turns to glass (GLASS) or is not there at all (FULLY CLEAR).' },
     { id = 'mech_pick', global = true, label = 'Mech model to edit', min = 1, max = #MECHS, step = 1, def = 1,
       hint = 'Pick the exosuit the mech rows below change. Each exosuit keeps its own settings.' },
     { id = 'tp_mech', label = 'Third person in a mech', toggle = true, def = false,
@@ -3617,26 +3619,41 @@ function HUD.body(it)
   end
   return u
 end
--- glass cockpit (our game patch, shared by every exosuit): the cockpit panels have their own material slots, solid
--- (the game's materials) by default; glass only while you sit in that exosuit. A body without our 6 slots is skipped.
-local GLASS = { slots = { 'm_shodan_glass_body', 'm_shodan_glass_base', 'm_shodan_glass_lights' },
-                solid = { '23a41cbe0203470f', '7f98d17ebc5f4757', 'ee8a6d805ca642b4' }, mat = '363ae2fcdfdef63e' }
-function HUD.glass(u, on)
+-- glass cockpit (our game patch, shared by every exosuit): the cockpit panels are their own mesh (9) on the game's slots,
+-- so the exosuit's pattern reaches them, and a glass copy of them is mesh 10. While you sit in that exosuit the glass
+-- (Cockpit GLASS) or nothing (FULLY CLEAR) shows instead of the panels; every other exosuit gets its glass hidden (it
+-- spawns shown). By number: the game doesn't know them by name (1.2.63). No material swaps: the game's shadow material
+-- set at runtime drew flat cyan (1.2.64).
+local GLASS = { panels = 9, glass = 10 }
+function HUD.glass(u, on, quiet)
   if not u then return end
-  local n = call('Mesh.num_materials', call('Unit.mesh', u, 'g_combat_walker'))
-  if n ~= 6 then once('glassn', 'glass cockpit: not in this exosuit\'s model (%s materials, ours has 6)', tostring(n)); return end
-  local done = 0
-  for k, slot in ipairs(GLASS.slots) do
-    local id, why = call('IdString64.from_hex', on and GLASS.mat or GLASS.solid[k])  -- a fresh id each time (never kept)
-    if id == nil then once('glassid', 'glass cockpit: no material id (%s)', tostring(why))
-    elseif call('Application.can_get', 'material', id) ~= true then
-      once('glassmat' .. tostring(on), 'glass cockpit: %s material not loaded', on and 'glass' or 'solid')
-    else
-      local _, no = call('Unit.set_material', u, slot, id)
-      if not no then done = done + 1 else once('glass' .. slot, 'glass cockpit: %s refused (%s)', slot, tostring(no)) end
-    end
+  local n = call('Unit.num_meshes', u)
+  local k = n == GLASS.glass and call('Mesh.num_materials', call('Unit.mesh', u, GLASS.glass))
+  if k ~= 1 then once('glassn', 'glass cockpit: not in this exosuit\'s model (%s meshes, last has %s materials; ours 10 and 1)', tostring(n), tostring(k)); return end
+  local clear = on and V.cockpit_look == 2
+  -- the one shown first and the others hidden only after, so a refusal never leaves a hole
+  local show = not on and GLASS.panels or not clear and GLASS.glass
+  local a = show and select(2, call('Unit.set_mesh_visibility', u, show, true, 'default'))
+  local b
+  if not a and on then b = select(2, call('Unit.set_mesh_visibility', u, GLASS.panels, false, 'default')) end
+  if not a and (clear or not on) then b = b or select(2, call('Unit.set_mesh_visibility', u, GLASS.glass, false, 'default')) end
+  local line = string.format('glass cockpit %s (%s, %s; glass drawn: %s)', on and (clear and 'fully clear' or 'on') or 'off',
+    a and 'show refused: ' .. tostring(a) or show and 'shown' or 'nothing shown', a and 'nothing hidden' or b and 'hide refused: ' .. tostring(b) or 'hidden',
+    tostring(call('Mesh.visibility', call('Unit.mesh', u, GLASS.glass))))
+  if not quiet then log('%s', line) elseif a or b then once('glassq', '%s (sweep)', line) end
+end
+-- once per watch list (about every 2 s): every listed exosuit you're not in gets its glass hidden, and yours is set
+-- again (a Cockpit change while seated; and if the game hid the glass, it's shown again)
+function HUD.glass_sweep()
+  if not mech_watch or mech_watch.generation == S.glass_gen then return end
+  S.glass_gen = mech_watch.generation
+  local u = S.glass_u
+  if u and V.cockpit_look ~= 2 and call('Unit.num_meshes', u) == GLASS.glass
+    and call('Mesh.visibility', call('Unit.mesh', u, GLASS.glass)) == false then
+    once('glassgone', 'glass cockpit: the game hid the glass while you sat in it; shown again every 2 s')
   end
-  log('glass cockpit %s (%d of 3 panel slots)', on and 'on' or 'off', done)
+  if u then HUD.glass(u, true, true) end
+  for _, o in ipairs(mech_watch.items) do if PRE[o.kind] and o.unit ~= u then HUD.glass(o.unit, false, true) end end
 end
 function HUD.goid(v) return type(v) == 'number' and v % 1 == 0 and v > 0 and v < 32767 end
 function HUD.fields(id)
@@ -4570,6 +4587,7 @@ local function step(dt)
     end
     local body = S.mech_it and HUD.body(S.mech_it) or false
     if body ~= S.glass_u then HUD.glass(S.glass_u, false); S.glass_u = body; HUD.glass(body, true) end
+    HUD.glass_sweep()
     S.mech, S.empl = mech, at_emplacement()
   end
   -- after a reset (the key, or an error the mod got over): first person as it was, whatever Start on says
