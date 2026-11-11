@@ -3035,6 +3035,10 @@ local function hand_back()
   S.tx = nil
 end
 
+-- back from these the 0.25 s ease from the game's camera (S.pin), not the glide. The table too (user: 'just like
+-- leaving the hellpod'): it came on after 'game camera away', a cut. The ship's own camera coming back too (arriving
+-- on the ship, user 2026-11-11: it snapped in 1.8 m from the head)
+local EASE_IN = { hellpod = true, ['galactic map'] = true, ['game camera away'] = true }
 local function set_act(act, why)
   -- off: the reason kept current (dying while gliding out of a knock-down cuts); coming on remembers the last one, so
   -- the glide in from the hellpod or a death cuts too
@@ -3043,7 +3047,7 @@ local function set_act(act, why)
   S.act, S.why = act, why
   -- hellpod: nothing written back, 0.25 s ease into the game's own camera and back out of it (not the glide)
   local pod = why == 'hellpod'
-  if act and S.offwhy == 'hellpod' then S.pin = S.t end
+  if act and EASE_IN[S.offwhy] then S.pin = S.t end
   if not act then S.offwhy, S.pout = why, pod and S.t or nil end
   local scoped = S.scoped
   if act then S.handing = false else S.handing, S.scoped, S.aim = true, false, false end
@@ -3064,14 +3068,45 @@ local function glide(dt)
     -- in a hellpod, or the game camera falling at hellpod speed for 0.1 s (the drop not recognized yet: that takes
     -- 0.25 s; a single frame's dip isn't a fall), or falling at all for the world's first switch-on (the mission's start);
     -- back from a hellpod its own 0.25 s ease (S.pin) does it
-    if V.blend <= 0 or CUT[goal == 1 and S.inwhy or S.why] or goal == 1 and S.offwhy == 'hellpod' or not S.head
+    if V.blend <= 0 or CUT[goal == 1 and S.inwhy or S.why] or goal == 1 and EASE_IN[S.offwhy] or not S.head
       or S.pod or S.puse or (S.pfall_t or 0) >= 0.1 or (S.pfall_t or 0) > 0 and not S.wglide then S.bw = goal
     elseif goal > S.bw then S.bw = min(1, S.bw + dt / V.blend)
     else S.bw = max(0, S.bw - dt / V.blend) end
     if abs(S.bw - goal) < 1e-9 then S.bw = goal end
   end
   if S.bw >= 1 then S.wglide = true end
-  local shown = S.bw >= 0.5
+  -- hidden only once the game showed our view in this world: joining a lobby it shows its own camera far off (over
+  -- 8 m, never written, so no view camera known yet) for a few seconds, and the body stood there headless (user
+  -- 2026-11-11). Any state of a known view camera counts: a weapon scope's camera reads 'far' too (1.2.55 log)
+  local inview = false
+  for _, k in ipairs(S.cams) do
+    if k.main or k.state == 'scope' or k.state == 'mech' then inview = true; break end
+  end
+  -- logged once it lasts 0.2 s (coming back from a cut, the first frame is always the game's)
+  S.held_t = S.bw >= 0.5 and not inview and (S.held_t or 0) + dt or 0
+  local held = S.held_t > 0.2
+  if held ~= (S.held or false) then
+    S.held = held
+    local n = {}
+    for _, k in ipairs(S.cams) do local s = (k.main and 'main ' or '') .. tostring(k.state); n[s] = (n[s] or 0) + 1 end
+    local l = {}
+    for s, c in pairs(n) do l[#l + 1] = s .. ' ' .. c end
+    table.sort(l)
+    log('%s (cameras: %s)', held and 'the game shows its own camera: body shown' or 'the game shows our view: body hidden', table.concat(l, ', '))
+  end
+  -- the 0.25 s ease (S.pin) hides only with the view within 0.3 m of the eyes: hidden halfway, the body showed
+  -- headless from 0.9 m behind (user 2026-11-11)
+  local easing = false
+  if S.pin and S.t - S.pin < 0.25 and S.tx then
+    for _, k in ipairs(S.cams) do
+      if k.main and k.gp then
+        local g = k.gp
+        easing = (1 - (S.t - S.pin) / 0.25) * sqrt((g[1] - S.tx) ^ 2 + (g[2] - S.ty) ^ 2 + (g[3] - S.tz) ^ 2) > 0.3
+        break
+      end
+    end
+  end
+  local shown = S.bw >= 0.5 and inview and not easing
   if shown ~= S.shown then S.shown = shown; apply_hiding() end
   if S.bw <= 0 and S.handing then hand_back() end
 end
@@ -3950,7 +3985,7 @@ local function step(dt)
     S.last_scan, S.rescans, S.cam_gen = nil, {}, nil
     S.hr, S.gfov, S.ghip, S.asm, S.adead, S.gheld, GR.d, GR.st = nil, nil, nil, {}, nil, nil, nil, {}
     S.gnd, S.gnd_t, S.fzp, S.ph, S.bad = nil, nil, nil, nil, nil
-    S.bw, S.shown, S.handing = 0, false, false
+    S.bw, S.shown, S.handing, S.held = 0, false, false, nil
     S.ad, S.aw, S.podu, S.puse, S.pod = nil, nil, nil, false, false
     S.away, S.away_t, S.spod, S.slow_t, S.sup_t, S.shmax, S.nopod, S.mdrop, S.pfall_t = false, 0, false, 0, 0, nil, false, nil, 0
     S.calm_t = 0
