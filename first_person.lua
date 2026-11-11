@@ -117,6 +117,12 @@ local TABS = {
       hint = 'How long the view takes to adjust when you aim or the target distance changes. Longer feels less like aim assist.' },
     { id = 'aim_max', label = 'Largest turn', min = 2, max = 20, step = 1, def = 8, unit = ' deg',
       hint = 'The most the view may turn off the game aim. Up close the needed turn is bigger; above this it stops at this angle.' },
+    { id = 'aim_ground', label = 'Line up at the ground', toggle = true, def = true,
+      hint = 'Looking down on foot, the crosshair sits where your shots meet the ground, not on a point under it.' },
+    { id = 'gun_dist', label = 'Distance on the FRV gun', min = 0, max = 100, step = 1, def = 0, unit = ' m', zero = 'SAME',
+      hint = 'The fixed distance on the FRV gunner seat. SAME = Distance with no enemy.' },
+    { id = 'empl_dist', label = 'Distance on emplacements', min = 0, max = 100, step = 1, def = 0, unit = ' m', zero = 'SAME',
+      hint = 'The fixed distance on emplacements. SAME = Distance with no enemy.' },
     { head = 'WHILE AIMING' },
     { id = 'aim_strength', label = 'Strength', min = 1, max = 10, step = 1, def = 10,
       hint = 'How much of the gap to the game aim gets corrected while aiming. 10 = exact, lower = gentler turns, shots land a bit off.' },
@@ -1641,6 +1647,13 @@ local function target(dt)
     local e = S.aimw * S.aimw * (3 - 2 * S.aimw)   -- eased: starts and ends gently
     f, up, sd = f + e * V.aimpos_fwd, up + e * V.aimpos_up, sd + e * V.aimpos_side
   end
+  local foot = not (S.frv or S.mech or S.empl or S.tank or S.diving or S.onback or S.getup or S.down)
+  -- the ground under you, for the crosshair fix looking down: your feet while they're steady, held through a jump or
+  -- a fall (the ground you left isn't the ground below you) until 0.3 s after they settle
+  local vz = (S.fzp and dt > 0) and (rz - S.fzp) / dt or 0
+  S.fzp = rz
+  if not foot or abs(vz) > 2 then S.gnd_t = S.t end
+  if not foot then S.gnd = nil elseif S.t - (S.gnd_t or -10) >= 0.3 then S.gnd = rz end
   -- offsets along the level view, height straight up: looking up or down no longer carries the view up into the gun
   -- or down into the chest; on foot, looking down pushes it forward instead
   local ux, uy = fx / hl, fy / hl
@@ -1796,8 +1809,11 @@ local function aim_fix(k, cam, dt)
     src = D and 'enemy' or 'no enemy'
     -- from the hip hip_strength scales only the extra turn toward the enemy (in 1/distance), the base aim_dist turn
     -- stays whole so shots at range still land
-    if D and not S.aim then D = 1 / (1 / V.aim_dist + V.hip_strength / 10 * (1 / D - 1 / V.aim_dist)) end
-    D = D or V.aim_dist
+    -- the fixed distance: its own on the FRV gun and on emplacements when set
+    local base = S.frv == 'gunner' and V.gun_dist > 0 and V.gun_dist or S.empl and V.empl_dist > 0 and V.empl_dist
+      or V.aim_dist
+    if D and not S.aim then D = 1 / (1 / base + V.hip_strength / 10 * (1 / D - 1 / base)) end
+    D = D or base
     -- eased in 1/distance (up close the turn goes with 1/distance, so equal steps feel equal): a held enemy over at
     -- most 0.25 s, back to aim_dist over aim_ease; from the hip both over hip_ease
     local te = max(not S.aim and V.hip_ease or S.hr.d and min(V.aim_ease, 0.25) or V.aim_ease, 0.01)
@@ -1813,10 +1829,23 @@ local function aim_fix(k, cam, dt)
   end
   -- from where the camera really is this frame (head + the forward/side offsets), not the bare head: up close the
   -- offsets left the turn short (0.3.107: hip shots right of the crosshair)
-  local hx, hy, hz = S.gcx + S.ad * dx - k.wx, S.gcy + S.ad * dy - k.wy, S.gcz + S.ad * dz - k.wz
-  local hl = sqrt(hx * hx + hy * hy + hz * hz)
-  if hl < 0.5 then return end
-  hx, hy, hz = hx / hl, hy / hl, hz / hl
+  -- looking down on foot, the game's line meets the ground (flat, at your feet) before S.ad: the up-down turn lines
+  -- up where the shots land. Left-right stays with the far point from the hip (the game camera sits to your right,
+  -- so a near point turned the view right whenever you looked down); aiming, it follows the ground point too, so a
+  -- shot at your feet lands on the crosshair
+  local dv, dh = S.ad, S.ad
+  if V.aim_ground and S.gnd and dz < -0.01 then
+    local tg = (S.gnd - S.gcz) / dz
+    if tg > 0.5 and tg < S.ad then dv = tg; if S.aim then dh = tg end end
+  end
+  local vx, vy, vz = S.gcx + dv * dx - k.wx, S.gcy + dv * dy - k.wy, S.gcz + dv * dz - k.wz
+  local vl = sqrt(vx * vx + vy * vy)
+  if vl * vl + vz * vz < 0.25 then return end
+  local qx, qy = S.gcx + dh * dx - k.wx, S.gcy + dh * dy - k.wy
+  local ql = sqrt(qx * qx + qy * qy)
+  if ql < 1e-3 then return end
+  local el = math.atan2(vz, vl)
+  local hx, hy, hz = qx / ql * math.cos(el), qy / ql * math.cos(el), math.sin(el)
   -- never more than aim_max deg off the game's look (at least 20 from the hip with hip_range: the game camera sits ~0.9 m to the side, so an enemy
   -- at 3 m needs ~17 deg)
   local c = hx * dx + hy * dy + hz * dz
@@ -2661,6 +2690,7 @@ function M.update(dt)
     S.ghid, S.gst, S.gsaid = {}, {}, {}
     S.last_scan, S.rescans, S.cam_gen = nil, {}, nil
     S.hr, S.gfov, S.ghip, S.asm = nil, nil, nil, {}
+    S.gnd, S.gnd_t, S.fzp = nil, nil, nil
     S.ad, S.aw, S.podu, S.puse, S.pod = nil, nil, nil, false, false
     S.away, S.away_t, S.spod, S.slow_t, S.sup_t, S.shmax, S.nopod, S.mdrop, S.pfall_t = false, 0, false, 0, 0, nil, false, nil, 0
     S.calm_t = 0
