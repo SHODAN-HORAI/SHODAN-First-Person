@@ -1,6 +1,6 @@
 {
   "name": "SHODAN First Person",
-  "version": "1.2.0",
+  "version": "2.0.0",
   "guid": "b43141b8-ca4d-44e4-98e5-a6cfd1fdf0c1",
   "description": "First person camera with its own settings panel (F10). F6 toggles. Needs Chef Shared Loader 1.5.4 or newer.",
   "lua": [ { "resource": "mods/shodan/first_person", "file": "first_person.lua" } ]

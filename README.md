@@ -17,6 +17,8 @@ reinforcement drops in. Aim with the ballistic shield raised and you look throug
 1. Install Chef Shared Loader 1.5.4 or newer.
 2. Add the SHODAN First Person zip in your mod manager and deploy. Its Death sound option plays a sound when you or a
    teammate dies. It's set to None by default, which keeps the game as it is.
+   Its Glass cockpit option turns an exosuit's cockpit to glass while you sit in it. Untick it if you use another
+   cockpit mod.
 3. Start the game. Press **F6** for first person and **F10** for the settings panel.
 
 ## Keys
@@ -42,7 +44,7 @@ it's in your hands.
 | Meshes | Hide any part of your helldiver from view, the guns in hand or on your back, and armour while scoped |
 | FRV | Driver, passenger and gunner seat positions and field of view, how far you can look down and the view when you look back, for each FRV model |
 | Tanks | Passenger seat positions and field of view for the Bastion and Maelstrom |
-| Mechs | Camera position and field of view for each mech and emplacement, or third person in them |
+| Mechs | Camera position and field of view for each mech and emplacement, or third person in them, and a glass or fully clear cockpit |
 | Keys | Every key the mod uses |
 
 ## License
