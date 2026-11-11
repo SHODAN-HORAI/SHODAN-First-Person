@@ -1530,7 +1530,7 @@ end
 -- 112 passenger, 104 gun). A head held over the car also counts as the gun (backup for a car with another gun animation)
 -- the gun is ALWAYS 104 (both logs); the Gunner FRV's passenger seat sits over the car box and plays other numbers
 -- each round (105/106, then 109/110), so a head over the car with any other animation is the passenger seat
-local FRV_ANIM = { [108] = 'driver', [112] = 'passenger', [104] = 'gunner' }
+local FRV_ANIM = { [108] = 'driver', [112] = 'passenger', [104] = 'gunner', [110] = 'passenger' }  -- 110: Supply FRV (log 2026-11-11)
 local function seat_anim()
   -- asked once per update: the animation can't change within one
   if S.sa_t == S.t then return S.sa end
@@ -1823,7 +1823,7 @@ local function warp_check(dx, dy, dz)
   local j = abs(dx) + abs(dy) + abs(dz)
   if j < 2 or j >= 40 then return end
   if not (S.warp and S.t - S.warp < 0.2) then log('warp %.1f m', j) end
-  S.warp = S.t
+  S.warp, S.snap = S.t, true
 end
 
 -- the view position for this frame: head (its offset from the root smoothed), then the offsets along the view
@@ -1918,6 +1918,13 @@ local function target(dt)
       ox, oy, oz = ox + ex * k, oy + ey * k, oz + ez * k
     end
   end
+  -- stepping into or out of a vehicle seat teleports the body 2-3 m (log 2026-11-10: 'warp 2.4 m' at every FRV exit):
+  -- smoothing across that trailed the view behind the body (report 2026-11-11). Start over from the head and track
+  -- it tight for 0.6 s while the pose settles; leaving a seat without a warp gets the tight 0.6 s too
+  local inseat = (S.frv or S.tank or S.gator) and true or false
+  if S.inseat and not inseat then S.snap_t = S.t end
+  S.inseat = inseat
+  if S.snap then S.snap, S.sm, S.snap_t = nil, nil, S.t end
   if not S.sm then S.sm = { ox, oy, oz } end
   local a = V.smooth_side > 0 and 1 - exp(-dt * 30 / V.smooth_side) or 1
   local b = V.smooth > 0 and 1 - exp(-dt * 30 / V.smooth) or 1
@@ -1932,7 +1939,13 @@ local function target(dt)
   -- flying (jump pack: over 8 m/s along the floor or rising 5+ m/s, on foot) tracks the head tight too (report 2026-11-09)
   local fast = sqrt(S.vx * S.vx + S.vy * S.vy)
   local fly = (fast > 8 or S.vz > 5) and not (S.frv or S.mech or S.empl or S.tank)
-  if fly then local g = 1 - exp(-dt / 0.03); a, b = max(a, g), max(b, g) end
+  if fly or S.t - (S.snap_t or -9) < 0.6 then local g = 1 - exp(-dt / 0.03); a, b = max(a, g), max(b, g) end
+  -- peeking out of a passenger seat (holding right click) swings the head out of the car in a moment: the smoothing
+  -- trailed it (0.17 s, up to 0.12 m), so the view lagged back toward the collar (user 2026-11-11). No smoothing
+  -- while peeking and 0.5 s after (leaning back in)
+  if S.aim and (S.frv == 'passenger' or S.tpass) then S.peek_t = S.t end
+  local peek = S.t - (S.peek_t or -9) < 0.5
+  if peek then a, b = 1, 1 end
   S.sm[1], S.sm[2], S.sm[3] = S.sm[1] + (ox - S.sm[1]) * a, S.sm[2] + (oy - S.sm[2]) * a, S.sm[3] + (oz - S.sm[3]) * b
   -- never more than smooth_max behind the head: sideways as one distance, up-down on its own (the bob it smooths is
   -- a few cm; a lag of tens of cm is a quick move the view should keep up with)
