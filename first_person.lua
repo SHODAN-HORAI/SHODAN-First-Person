@@ -239,6 +239,8 @@ local TABS = {
     { id = 'frv_fov', label = 'Field of view in this FRV', min = 0, max = 120, step = 1, def = 0, unit = ' deg', zero = 'SAME',
       hint = 'Up-down view angle in this FRV, first or third person. SAME = the normal field of view (in third person the game default).' },
     { head = 'DRIVER' },
+    { id = 'frv_tpd', label = 'Third person when driving', toggle = true, def = false,
+      hint = 'The game camera in the driver seat only. Third person in this FRV on = every seat.' },
     { id = 'frv_fwd', label = 'Forward', min = -0.6, max = 0.6, step = 0.01, def = 0.06, unit = ' m',
       hint = 'Extra forward or back while you drive an FRV.' },
     { id = 'frv_up', label = 'Height', min = -0.6, max = 0.6, step = 0.01, def = 0.02, unit = ' m',
@@ -246,6 +248,8 @@ local TABS = {
     { id = 'frv_side', label = 'Sideways', min = -0.6, max = 0.6, step = 0.01, def = 0, unit = ' m',
       hint = 'Move the view left (minus) or right while you drive an FRV.' },
     { head = 'PASSENGER' },
+    { id = 'frvp_tp', label = 'Third person as a passenger', toggle = true, def = false,
+      hint = 'The game camera in a passenger seat only.' },
     { id = 'frvp_fwd', label = 'Forward', min = -0.6, max = 0.6, step = 0.01, def = 0.06, unit = ' m',
       hint = 'Extra forward or back in an FRV passenger seat.' },
     { id = 'frvp_up', label = 'Height', min = -0.6, max = 0.6, step = 0.01, def = 0.02, unit = ' m',
@@ -253,6 +257,8 @@ local TABS = {
     { id = 'frvp_side', label = 'Sideways', min = -0.6, max = 0.6, step = 0.01, def = 0, unit = ' m',
       hint = 'Move the view left (minus) or right in an FRV passenger seat.' },
     { head = 'GUNNER' },
+    { id = 'frvg_tp', label = 'Third person on the gun', toggle = true, def = false,
+      hint = 'The game camera on the gun only.' },
     { id = 'frvg_fwd', label = 'Forward', min = -0.6, max = 0.6, step = 0.01, def = -0.04, unit = ' m',
       hint = 'Extra forward or back on the FRV gun.' },
     { id = 'frvg_up', label = 'Height', min = -0.6, max = 0.6, step = 0.01, def = 0.2, unit = ' m',
@@ -1651,6 +1657,19 @@ local function target(dt)
   local f = V.fwd + (seat and V[pre .. seat[1]] or S.sf or 0)
   local up = V.up + (seat and V[pre .. seat[2]] or S.su or 0)
   local sd = V.side + (seat and V[pre .. seat[3]] or S.ss or 0)
+  -- a tank passenger seat or an FRV's driver or passenger seat: the seat's own Forward and Sideways go along the
+  -- vehicle (its facing), so looking round turns the view in place instead of swinging it round the seat. The eye's
+  -- offsets still follow the look; the gun turns with your aim, so the gunner seat stays with the look.
+  local vu = S.tpass and S.tank and S.tank.u or (S.frv == 'driver' or S.frv == 'passenger') and S.frv_u or nil
+  local vf, vs, vx, vy = 0, 0, 0, 1
+  if vu and seat then
+    local a, b = chef.unit_rotation(vu)
+    local l = (finite(a) and finite(b)) and sqrt(a * a + b * b) or 0
+    if l > 1e-4 then
+      vf, vs, vx, vy = V[pre .. seat[1]], V[pre .. seat[3]], a / l, b / l
+      f, sd = f - vf, sd - vs
+    end
+  end
   -- aiming on foot: the VIEW WHILE AIMING offsets, eased in and out with the aim (S.aimw 0..1)
   local aiming = S.aim and S.act and not (S.frv or S.mech or S.empl or S.tank) or false
   local at = V.aimpos_time
@@ -1670,8 +1689,8 @@ local function target(dt)
   -- or down into the chest; on foot, looking down pushes it forward instead
   local ux, uy = fx / hl, fy / hl
   if not seat then f = f + max(0, -fz) * V.look_down end
-  S.tx = rx + S.sm[1] + ux * f + uy * sd
-  S.ty = ry + S.sm[2] + uy * f - ux * sd
+  S.tx = rx + S.sm[1] + ux * f + uy * sd + vx * vf + vy * vs
+  S.ty = ry + S.sm[2] + uy * f - ux * sd + vy * vf - vx * vs
   S.tz = rz + S.sm[3] + up
   S.trx, S.try, S.trz = rx, ry, rz  -- the root this view was built from (the draw pass moves it along)
 end
@@ -2387,6 +2406,8 @@ local function menu_check()
   if strat ~= (S.strat_open or false) then S.strat_open = strat; log('stratagem list %s', strat and 'out' or 'away') end
 end
 
+-- each FRV seat's own Third person row (the model's prefix in front)
+local FRV_TP = { driver = 'frv_tpd', passenger = 'frvp_tp', gunner = 'frvg_tp' }
 local function update_act()
   local why
   if not S.on then why = 'switched off'
@@ -2400,7 +2421,7 @@ local function update_act()
   elseif V.tp_menus and S.strat_open then why = 'stratagems'
   elseif V.tp_down and S.down and not (S.frv or S.mech or S.empl or S.tank) then why = 'knocked down'  -- seats look like lying down
   elseif S.tank and (S.tank.seat == 'crew' or V[S.tank.tp]) then why = 'tank ' .. S.tank.seat
-  elseif S.frv and V[S.frv_pre .. 'frv_tp'] then why = 'FRV'
+  elseif S.frv and (V[S.frv_pre .. 'frv_tp'] or V[S.frv_pre .. FRV_TP[S.frv]]) then why = 'FRV'
   elseif S.mech and V[S.mech_pre .. 'tp_mech'] then why = 'mech'
   elseif S.empl and V[S.empl_pre .. 'tp_empl'] then why = 'emplacement' end
   set_act(why == nil, why or 'first person')
@@ -2815,7 +2836,7 @@ function M.update(dt)
     S.tank_on = sit and (S.tank_on or 0) + 1 or 0
     S.tank_off = sit and 0 or (S.tank_off or 0) + 1
     if sit and (S.tank or S.tank_on >= 2) then
-      S.tank = { seat = tank_seat(tk), tp = TANKS[tk.kind].tp, id = TANKS[tk.kind].id }
+      S.tank = { seat = tank_seat(tk), tp = TANKS[tk.kind].tp, id = TANKS[tk.kind].id, u = tk.unit }
     elseif S.tank and S.tank_off >= 2 then
       S.tank, S.tseat = false, nil; log('out of the tank')
     end
