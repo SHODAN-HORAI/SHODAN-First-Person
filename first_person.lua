@@ -160,6 +160,17 @@ local TABS = {
       hint = 'The fixed distance on the FRV gunner seat. SAME = Distance with no enemy.' },
     { id = 'empl_dist', label = 'Distance on emplacements', min = 0, max = 100, step = 1, def = 0, unit = ' m', zero = 'SAME',
       hint = 'The fixed distance on emplacements. SAME = Distance with no enemy.' },
+    { head = 'MEASURE FROM THE GUN' },
+    { id = 'gun_measure', label = 'Measure from the gun', toggle = true, def = false,
+      hint = 'On foot: the distance with no enemy is read from where your gun points (walls, slopes, things near you), not fixed. Needs both hands on the gun.' },
+    { id = 'gun_nearest', label = 'Nearest', min = 2, max = 20, step = 1, def = 10, unit = ' m',
+      hint = 'Measured from the gun: never lines up nearer than this. Shots at things closer land a little beside the crosshair.' },
+    { id = 'gun_steps', label = 'Ranges 10/25/50/100', toggle = true, def = true,
+      hint = 'Measured from the gun: only four distances (Nearest, 25, 50, 100 m), changed only on a clear difference. Off: the measured distance itself.' },
+    { id = 'gun_glide', label = 'Glide', min = 0, max = 10, step = 0.5, def = 5, unit = ' s', zero = 'QUICK',
+      hint = 'Measured from the gun: each new distance is followed at one even pace taking this long, so a change is hardly felt. QUICK = a new distance must hold a moment, then a quick move.' },
+    { id = 'reload_hold', label = 'Hold while reloading', min = 0, max = 10, step = 0.5, def = 10, unit = ' s', zero = 'OFF',
+      hint = 'Measured from the gun: after R the distance holds until you fire, aim, or this long passes, so the reload tilt never pulls the crosshair. Set it to your longest reload.' },
     { head = 'WHILE AIMING' },
     { id = 'aim_strength', label = 'Strength', min = 1, max = 10, step = 1, def = 10,
       hint = 'How much of the gap to the game aim gets corrected while aiming. 10 = exact, lower = gentler turns, shots land a bit off.' },
@@ -181,6 +192,10 @@ local TABS = {
       hint = 'With Correct for enemies on: an enemy this close to the crosshair counts even when the line misses it (small or far targets).' },
     { id = 'aim_corpse', label = 'Skip dead enemies', toggle = true, def = true,
       hint = 'With Correct for enemies on: bodies on the ground never count as the enemy under the crosshair.' },
+    { id = 'wall_first', label = 'Near walls first', toggle = true, def = true,
+      hint = 'With Measure from the gun on: the mod cannot see walls, so an enemy behind a rock still counts. When the gun steadily measures something near (under 12 m) well in front of the enemy, the near distance wins.' },
+    { id = 'seat_ease', label = 'Enemy time in seats', min = 0.1, max = 2, step = 0.05, def = 0.6, unit = ' s',
+      hint = 'On the FRV gun, emplacements and mechs: how long the view takes to follow an enemy\'s distance. Slower than on foot, since a seat turns the whole view.' },
   } },
   { name = 'STANCE', rows = {
     { head = 'CROUCHED' },
@@ -1098,7 +1113,8 @@ local function hide_guns()
         elseif p then
           if dist(p, refs.left) < 0.002 or dist(p, refs.right) < 0.002 then
             st.state, st.learn = 'held', nil
-            if it.kind == SHIELD_KIND then S.shield_t = S.t end
+            if it.kind == SHIELD_KIND then S.shield_t = S.t
+            else S.gheld = { u = it.unit, p = p, o = dist(p, refs.left) < 0.002 and refs.right or refs.left, t = S.t } end
           else
             if st.state == 'held' then st.state = nil end
             -- rigid on a slot: same distance to it (3 mm) over 3+ samples and 0.1 s while the slot moved 5 cm
@@ -2102,6 +2118,140 @@ local function aim_range(G, dx, dy, dz)
   return nil, 'no enemy'
 end
 
+-- Measure from the gun: the game points your gun at what its camera line hits, so the two lines cross there, and how
+-- far along the camera line they pass closest is how far away the shot lands. Read
+-- only from a gun in both hands, steady, along the aim, not while the view turns fast, a reload tilts it or the
+-- stratagem key is down; with nothing read the last distance holds. Followed in 1/distance at one even pace: the turn
+-- the crosshair fix makes goes with 1/distance, so every change looks the same speed (paced in metres, 100 to
+-- 10 m would crawl at the start and rush at the end).
+local GR = { st = {} }
+function GR.range_of(d, mn) return d < 15.8 and mn or (d < 37 and 25 or (d < 70 and 50 or 100)) end
+-- one reading along the game's line from (S.gcx, S.gcy, S.gcz): metres, 100 (the lines parallel: far), or nil
+function GR.read(fx, fy, fz, dt)
+  local st = GR.st
+  local fire = chef.mouse_down('left')
+  if chef.key_pressed('r') then st.rld = S.t end
+  if st.rld and S.t - st.rld > 0.3 and ((fire and not st.fw) or (S.aim and not st.aw)) then st.rld = nil end
+  st.fw, st.aw = fire, S.aim
+  local reloading = st.rld and S.t - st.rld < V.reload_hold
+  local pf = st.f
+  if pf and dt > 0 and math.deg(math.acos(max(-1, min(1, pf[1] * fx + pf[2] * fy + pf[3] * fz)))) / dt > 40 then st.turn = S.t end
+  st.f = { fx, fy, fz }
+  if S.shield then return V.aim_dist end  -- the shield's one-handed gun crosses the view a few metres out: fixed
+  local g = S.gheld
+  if not (g and S.t - g.t < 0.3 and g.o and chef.unit_alive(g.u)) then st.calm = nil; return end
+  local q = call('Unit.world_rotation', g.u, 1)
+  if not q then return end
+  -- the gun's long axis: whichever of its three points along the aim (a held gun points within ~30 deg of it)
+  local lx, ly, lz, best = nil, nil, nil, 0.85
+  for _, ax in ipairs({ 'Quaternion.forward', 'Quaternion.up', 'Quaternion.right' }) do
+    local x, y, z = xyz(call(ax, q))
+    local c = x and finite(x) and (x * fx + y * fy + z * fz) or 0
+    if abs(c) > best then best, lx, ly, lz = abs(c), c < 0 and -x or x, c < 0 and -y or y, c < 0 and -z or z end
+  end
+  if not lx then st.calm = nil; return end
+  local p, o = g.p, g.o
+  -- both hands on it: the other hand within 0.2 m of the gun's line
+  local ox, oy, oz = o[1] - p[1], o[2] - p[2], o[3] - p[3]
+  local al = ox * lx + oy * ly + oz * lz
+  local px, py, pz = ox - al * lx, oy - al * ly, oz - al * lz
+  if px * px + py * py + pz * pz > 0.04 or abs(al) > 0.8 then st.calm = nil; return end
+  st.calm = st.calm or S.t
+  if S.t - st.calm < 0.1 or reloading or chef.key_down('left ctrl') or S.t - (st.turn or -9) < 0.25 then return end
+  -- the gun's direction in the camera's frame, smoothed twice: quick (0.25 s) for the distance, slow (0.8 s) to tell
+  -- a lasting angle (a wall) from the idle sway, which swings to and fro around the true direction
+  local cl = sqrt(fx * fx + fy * fy)
+  local rx, ry = cl > 1e-3 and fy / cl or 1, cl > 1e-3 and -fx / cl or 0
+  local ux, uy, uz = ry * fz, -rx * fz, rx * fy - ry * fx
+  local o_r, o_u, o_f = lx * rx + ly * ry, lx * ux + ly * uy + lz * uz, lx * fx + ly * fy + lz * fz
+  local sm = st.sm
+  if not sm or S.t - sm[5] > 0.5 then sm = { o_r, o_u, o_r, o_u, S.t } end
+  local a1, a2 = 1 - exp(-dt / 0.25), 1 - exp(-dt / 0.8)
+  sm[1], sm[2], sm[3], sm[4], sm[5] = sm[1] + (o_r - sm[1]) * a1, sm[2] + (o_u - sm[2]) * a1, sm[3] + (o_r - sm[3]) * a2, sm[4] + (o_u - sm[4]) * a2, S.t
+  st.sm = sm
+  local function line(r, u)
+    local x, y, z = fx * o_f + rx * r + ux * u, fy * o_f + ry * r + uy * u, fz * o_f + uz * u
+    local l = sqrt(x * x + y * y + z * z)
+    return x / l, y / l, z / l
+  end
+  local w0x, w0y, w0z = S.gcx - p[1], S.gcy - p[2], S.gcz - p[3]
+  local dd = fx * w0x + fy * w0y + fz * w0z
+  -- where the camera line and a gun line pass closest: metres along the camera line, or false (they don't meet)
+  local function cross(gx, gy, gz)
+    local b = fx * gx + fy * gy + fz * gz
+    local den = 1 - b * b
+    local e = gx * w0x + gy * w0y + gz * w0z
+    local sc, sg = (b * e - dd) / den, (e - b * dd) / den
+    local cx, cy, cz = w0x + fx * sc - gx * sg, w0y + fy * sc - gy * sg, w0z + fz * sc - gz * sg
+    if sc > 1 and sg > -0.5 and sqrt(cx * cx + cy * cy + cz * cz) < 0.12 + 0.01 * sc then return max(1.5, min(100, sc)) end
+    return false
+  end
+  local qx, qy, qz = line(sm[1], sm[2])
+  local sx, sy, sz = line(sm[3], sm[4])
+  local b, bs = fx * qx + fy * qy + fz * qz, fx * sx + fy * sy + fz * sz
+  local d
+  if 1 - b * b > 0.0019 and 1 - bs * bs > 0.0019 then  -- a clear angle (2.5 deg and more): the lines must truly meet
+    d = cross(qx, qy, qz) or nil
+  elseif 1 - b * b < 0.00069 or 1 - bs * bs < 0.00069 then  -- nearly parallel (1.5 deg): far, unless the slow line meets
+    d = 1 - bs * bs > 0.00005 and cross(sx, sy, sz) or 100
+  end  -- (between the two: no reading, so mid range never swings between 15 and 100 m)
+  if d and d < 12 then
+    local n = st.near
+    if not n or S.t - n.last > 0.3 then n = { since = S.t, d = d } end
+    n.last, n.d = S.t, n.d + (d - n.d) * 0.3
+    st.near = n
+  elseif d then st.near = nil end
+  return d
+end
+-- the distance to line up at, from a reading (nil: hold): Nearest and the ranges applied, then glided
+function GR.dist(d, dt)
+  local st, mn = GR.st, V.gun_nearest
+  if d then d = max(mn, min(100, d)) end
+  if d and V.gun_steps then
+    local s = st.step or GR.range_of(d, mn)
+    local function down_to(x) return x < 13.5 and mn or (x < 32 and 25 or 50) end
+    -- up: from Nearest at 18 m, 25 -> 50 at 38, 50 -> 100 at 75; down: below 13.5, 32 and 62 m
+    if s == mn and d >= 18 then s = d >= 75 and 100 or (d >= 38 and 50 or 25)
+    elseif s == 25 and d < 13.5 then s = mn
+    elseif s == 25 and d >= 38 then s = d >= 75 and 100 or 50
+    elseif s == 50 and d < 32 then s = down_to(d)
+    elseif s == 50 and d >= 75 then s = 100
+    elseif s == 100 and d < 62 then s = down_to(d) end
+    st.step, d = s, s
+  end
+  local cur = st.cur or d or V.aim_dist
+  local tgt = st.tgt or cur
+  if d and V.gun_glide > 0 then tgt = d
+  elseif d then  -- QUICK: a new distance must hold (within 15 %) 0.35 s, and be a change the view would show
+    local c = st.cand
+    if c and abs(math.log(d) - math.log(c[1])) < 0.15 then
+      if S.t - c[2] >= 0.35 and (V.gun_steps and d ~= tgt or abs(1 / d - 1 / tgt) > 0.0107) then tgt = d end
+    else st.cand = { d, S.t } end
+  end
+  st.tgt = tgt
+  if V.gun_glide > 0 then
+    -- a new move only for a target 15 % or more from the one under way (a wandering reading keeps the same pace)
+    if not st.gt or abs(math.log(tgt) - math.log(st.gt)) > 0.15 then st.gfrom = cur end
+    st.gt = tgt
+    local k, kt = 1 / cur, 1 / tgt
+    local step = max(abs(kt - 1 / st.gfrom) / V.gun_glide, 0.002) * dt
+    if abs(kt - k) <= step then k = kt elseif kt > k then k = k + step else k = k - step end
+    cur = 1 / k
+  else
+    cur = 1 / (1 / cur + (1 / tgt - 1 / cur) * (1 - exp(-(tgt < cur and 12 or 4) * dt)))
+  end
+  st.cur = cur
+  return cur
+end
+-- an enemy's range just lost: go on from the nearest range to where the view is, not back to the old one
+function GR.lost(cur)
+  local st = GR.st
+  if not (cur and V.gun_steps) then return end
+  local r = GR.range_of(cur, V.gun_nearest)
+  st.step, st.tgt, st.cur, st.gt, st.cand = r, r, cur, nil, nil
+  log('measured from the gun: enemy lost at %.1f m, on to %d m', cur, r)
+end
+
 -- the distance the view converges at, held steady: re-picking the nearest enemy every frame flipped between enemies
 -- in a crowd (0.3.108 'jumpy'). A new enemy or distance counts only once it stayed 0.15 s (0.25 s to switch enemy),
 -- changes under 1.5 m (or 5%) are ignored, and a lost target is kept 1.25 s before going back to aim_dist.
@@ -2126,6 +2276,7 @@ end
 -- the fixed distance: its own on the FRV gun and on emplacements when set, else aim_dist
 local function fixed_dist()
   if S.runaim then return V.run_dist end
+  if GR.d then return GR.d end
   return S.frv == 'gunner' and V.gun_dist > 0 and V.gun_dist or S.empl and V.empl_dist > 0 and V.empl_dist or V.aim_dist
 end
 -- where the game's line (looking down, dz < 0) meets the flat ground at your feet, if that comes before D m
@@ -2142,11 +2293,23 @@ local function aim_fix(k, cam, dt)
   local on = V.aim_fix and (S.aim or V.aim_hip) and dx and S.gcx and k.wx
   local D, src
   if on and not S.draw then
+    local gm = V.gun_measure and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel)
+    if gm then GR.d = GR.dist(GR.read(dx, dy, dz, dt), dt)
+    elseif GR.d then GR.d, GR.st = nil, {} end
+    S.gund = GR.d
     -- fixed distance unless aim_range (aiming) or hip_range (hip; enemy ranging there turned the view far too hard, 0.3.109)
     local raw, u, _
     if (S.aim and V.aim_range) or (not S.aim and V.hip_range) then raw, _, u = aim_range({ S.gcx, S.gcy, S.gcz }, dx, dy, dz) end
+    -- near walls first: the gun steadily measures something near, well short of the enemy (behind a rock)
+    local n = GR.st.near
+    if raw and gm and V.wall_first and n and S.t - n.last < 0.6 and S.t - n.since >= 0.25 and n.d < 0.6 * raw then
+      if not GR.st.wsaid then log('measured from the gun: %.1f m in front of the enemy (%.0f m), the near distance wins', n.d, raw) end
+      GR.st.wsaid, raw, u = true, nil, nil
+    elseif raw then GR.st.wsaid = nil end
     S.araw = raw
+    local had = S.hr and S.hr.d
     D = held_range(raw, u)
+    if gm and had and not D then GR.lost(S.ad) end
     src = D and 'enemy' or 'no enemy'
     -- from the hip hip_strength scales only the extra turn toward the enemy (in 1/distance), the base aim_dist turn
     -- stays whole so shots at range still land
@@ -2155,13 +2318,15 @@ local function aim_fix(k, cam, dt)
     D = D or fd
     -- eased in 1/distance (up close the turn goes with 1/distance, so equal steps feel equal): a held enemy over at
     -- most 0.25 s, back to aim_dist over aim_ease; from the hip both over hip_ease
-    local te = max(not S.aim and V.hip_ease or S.hr.d and min(V.aim_ease, 0.25) or V.aim_ease, 0.01)
+    -- in a seat a held enemy is followed over seat_ease (slower: the seat turns the whole view)
+    local seat = (S.frv == 'gunner' or S.empl or S.mech) and S.hr.d
+    local te = max(seat and V.seat_ease or not S.aim and V.hip_ease or S.hr.d and min(V.aim_ease, 0.25) or V.aim_ease, 0.01)
     S.ad = S.ad and 1 / (1 / S.ad + (1 / D - 1 / S.ad) * (1 - exp(-dt / te))) or D
   end
   local rate = 1 / max(V.aim_ease, 0.05)
   S.aw = on and min(1, (S.aw or 0) + dt * rate) or max(0, (S.aw or 0) - dt * rate)
   if S.aw <= 0 or not (S.ad and S.gcx and dx) then
-    if S.aw <= 0 then S.ad, S.hr = nil, nil end
+    if S.aw <= 0 then S.ad, S.hr, GR.d, GR.st, S.gund = nil, nil, nil, {}, nil end
     if mine then call('Camera.set_local_rotation', cam, k.u, base) end
     k.last = nil
     return
@@ -3577,7 +3742,7 @@ local function step(dt)
     S.world, S.cams, S.head, S.hidden, S.parts, S.on, S.tx = chef.world_id(), {}, nil, {}, {}, false, nil
     S.ghid, S.gst, S.gsaid = {}, {}, {}
     S.last_scan, S.rescans, S.cam_gen = nil, {}, nil
-    S.hr, S.gfov, S.ghip, S.asm, S.adead = nil, nil, nil, {}, nil
+    S.hr, S.gfov, S.ghip, S.asm, S.adead, S.gheld, GR.d, GR.st = nil, nil, nil, {}, nil, nil, nil, {}
     S.gnd, S.gnd_t, S.fzp, S.ph, S.bad = nil, nil, nil, nil, nil
     S.bw, S.shown, S.handing = 0, false, false
     S.ad, S.aw, S.podu, S.puse, S.pod = nil, nil, nil, false, false
