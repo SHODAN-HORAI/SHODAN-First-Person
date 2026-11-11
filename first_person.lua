@@ -83,7 +83,7 @@ local TABS = {
     { id = 'tp_galaxy', label = 'Third person at the galactic map', toggle = true, def = true,
       hint = 'Switches to the game camera while you use the galactic map.' },
     { id = 'tp_pod', label = 'Third person in the hellpod', toggle = true, def = true,
-      hint = 'Switches to the game camera from the moment you use the hellpod on the ship until you climb out.' },
+      hint = 'Switches to the game camera from the moment you use the hellpod on the ship until you climb out, and in the drop until you step out of the pod.' },
     { id = 'tp_term', label = 'Third person at terminals', toggle = true, def = true,
       hint = 'Switches to the game camera while you use a mission terminal, and back when you step off it.' },
     { head = '(Experimental, report issues!)', note = true },
@@ -413,13 +413,49 @@ end
 ---------------------------------------------------------------------------------------------------- camera
 local S = { on = false, cams = {}, head = nil, look = 0, frv_t = 0, said = {}, parts = {}, hidden = {}, uhid = {}, ghid = {}, gst = {}, gsaid = {}, world = -1,
   t = 0, rescans = {} }
+-- a node index is only passed on while the unit has that many nodes: the loader checks the unit, not the index, and
+-- indices are kept (per kind, per unit), so a handle the engine hands out again for another unit must not get one
+-- that is out of range. Counted once a frame per unit; no count to be had = asked as before.
+local nodes_n, nodes_t = {}, nil
+local function upos(u, i)
+  if i and i ~= 1 then
+    if nodes_t ~= S.t then nodes_n, nodes_t = {}, S.t end
+    local n = nodes_n[u]
+    if n == nil then n = tonumber((call('Unit.num_scene_graph_items', u))) or false; nodes_n[u] = n end
+    if n and (i < 1 or i > n) then
+      if not S.said['node' .. tostring(i)] then S.said['node' .. tostring(i)] = true; log('node %s not asked: the unit has %d', tostring(i), n) end
+      return nil
+    end
+  end
+  return chef.unit_position(u, i)
+end
+-- a camera unit's camera, only while it still has that slot (the slot list is kept between camera list changes)
+local function cam_of(k)
+  local n = tonumber((call('Unit.num_cameras', k.u)))
+  if n and k.slot > n then
+    if not S.said['slot' .. k.slot] then S.said['slot' .. k.slot] = true; log('camera slot %d not asked: the unit has %d', k.slot, n) end
+    return nil
+  end
+  return call('Unit.camera', k.u, k.slot)
+end
 -- the diver's animation state, only while the body still has its animation: asking a dead body whose animation the
 -- game has torn down crashed the game a few seconds after every death (2026-11-07).
 -- No animation left = dead: the game's view from then on (S.dead)
+-- Never in a hellpod (S.nopod: climbing in on the ship, the drop in a mission) or on the ship's cutscene camera: the
+-- game takes that body apart for the launch, the same tear-down the death crash came from. Reports of a crash at the
+-- hellpod (2026-11-09) came with this asked every frame from climbing in until the ship unloaded.
 local UnitApi = rawget(_G, 'Unit') or rawget(_G, 'stingray') and stingray.Unit
--- all = every layer's state: chef.call passes on only the first 4, so the engine is called straight (same guards)
+local function raw_anim(ok, ...)
+  if ok then return ... end
+  if not S.said.rawanim then S.said.rawanim = true; log('animation layers: %s', tostring((...))) end
+end
+-- all = every layer's state: chef.call passes on only the first 4, so the engine is called straight. That skips the
+-- loader's guard, so never down, dead or in a hellpod, and inside a pcall (the ship too: the pod check needs it)
 local function anim(u, all)
-  if not u then return nil end
+  if not u or S.nopod then return nil end
+  -- mission: not while the game camera falls (a drop not yet seen as one: the world can settle mid-drop) and not
+  -- until it has been still for 0.5 s
+  if chef.in_mission() and (S.calm_t or 0) < 0.5 then return nil end
   if S.down_any and chef.in_mission() and (S.atrace or 0) <= S.t then S.atrace = S.t + 0.5; log('asking the animation while down') end
   local has, why = call('Unit.has_animation_state_machine', u)
   if has == false then
@@ -428,7 +464,10 @@ local function anim(u, all)
   end
   -- the check itself refused: still never ask a body that's down
   if has == nil then if not S.said.asm then S.said.asm = true; log('animation check unavailable: %s', tostring(why)) end; if S.down_any then return nil end end
-  if all and has == true and UnitApi and UnitApi.animation_get_state and chef.unit_alive(u) then return UnitApi.animation_get_state(u) end
+  if all then
+    if not (has == true and not (S.down_any or S.dead or S.down) and UnitApi and UnitApi.animation_get_state and chef.unit_alive(u)) then return nil end
+    return raw_anim(pcall(UnitApi.animation_get_state, u))
+  end
   return call('Unit.animation_get_state', u)
 end
 local frv_watch = chef.watch and chef.watch(FRV_KINDS, 2) or nil
@@ -794,7 +833,7 @@ local function node_at(u, name)
   node_ix[u] = c
   if c[name] == nil then c[name] = chef.unit_node(u, name) or false end
   local i = c[name]
-  if i then local x, y, z = chef.unit_position(u, i); if x then return { x, y, z } end end
+  if i then local x, y, z = upos(u, i); if x then return { x, y, z } end end
 end
 -- a mesh by name, or by its 8-digit hash when the name is unknown (a fresh engine key each time, never kept)
 local function mesh_key(u, m)
@@ -839,12 +878,12 @@ local function hide_guns()
   if S.act and d and gun_watch and chef.unit_alive(d) then
     local refs = { left = node_at(d, 'attach_hand_l'), right = node_at(d, 'attach_hand_r') }
     for _, l in pairs(SLOTS) do for _, n in ipairs(l) do refs[n] = refs[n] or node_at(d, n) end end
-    local rx, ry, rz = chef.unit_position(d)
+    local rx, ry, rz = upos(d)
     local parts, carried = {}, {}
     for _, it in ipairs(rx and gun_watch.items or {}) do
       if (it.x - rx) ^ 2 + (it.y - ry) ^ 2 < 100 and chef.unit_alive(it.unit) then  -- the list's spots are up to 1 s old
         local g = GUNS[it.kind]
-        local x, y, z = chef.unit_position(it.unit)
+        local x, y, z = upos(it.unit)
         local p = x and { x, y, z }
         local st = S.gst[it.unit] or {}
         S.gst[it.unit] = st
@@ -956,7 +995,8 @@ local function scan_done(near)
   local c = chef.camera()
   if not c then return end
   local best, bd = nil, 6
-  local gate = others_here() and not drop_seen()
+  -- ship: your Helldiver (S.mine) while it's there, never a teammate's (nothing on the ship gives you a new one)
+  local gate = others_here() and not drop_seen() or not chef.in_mission() and S.mine ~= nil and chef.unit_alive(S.mine)
   -- right after your drop: your Helldiver is the one that came down with the pod (30+ m below its highest point;
   -- it exists from the mission load, 2026-11-07 log), so a teammate standing where you land is never taken. None
   -- fell = nearest, as before
@@ -964,14 +1004,14 @@ local function scan_done(near)
   local fresh = nil
   if others_here() and drop_seen() then
     for _, h in ipairs(near) do
-      h.x, h.y, h.z = chef.unit_position(h.u, h.node)
+      h.x, h.y, h.z = upos(h.u, h.node)
       if h.bone == 'head' and h.kind == AVATAR_KIND and h.u ~= S.mine and fell(h) then fresh = true end
     end
   end
   for _, h in ipairs(near) do
-    h.x, h.y, h.z = chef.unit_position(h.u, h.node)
+    h.x, h.y, h.z = upos(h.u, h.node)
     local teammate = gate and h.u ~= S.mine
-    if teammate and h.bone == 'head' and h.kind == AVATAR_KIND then
+    if teammate and others_here() and h.bone == 'head' and h.kind == AVATAR_KIND then
       once('podwait' .. tostring(h.u), 'a teammate near the camera: waiting for your hellpod (%d players, fastest camera fall so far %.0f m/s)',
         chef.players(), S.fall_max or 0)
     end
@@ -1002,7 +1042,7 @@ local function scan_done(near)
   for _, nn in ipairs(BONES) do
     local i = chef.unit_node(best.u, nn)
     local x, y, z
-    if i then x, y, z = chef.unit_position(best.u, i) end
+    if i then x, y, z = upos(best.u, i) end
     if x then at[nn] = { x, y, z } end
   end
   local parts, old = {}, {}
@@ -1051,7 +1091,7 @@ local function start_scan(w)
     if GEAR[k] then b = { gear = GEAR[k] } end
     if not b then return end
     local c = chef.camera()
-    local x, y, z = chef.unit_position(u)
+    local x, y, z = upos(u)
     if k == AVATAR_KIND and z and z > (S.avtop[u] or -1e9) then S.avtop[u] = z end  -- each Helldiver's highest point, anywhere
     if k == AVATAR_KIND and c and x and (S.fall_t or 0) > 0 then
       local d = (x - c.x) ^ 2 + (y - c.y) ^ 2 + (z - c.z) ^ 2
@@ -1078,8 +1118,10 @@ local function check_player(w)
       local ours = false
       for _, k in ipairs(S.cams) do if k.state == 'ours' or k.state == 'scope' then ours = true end end
       local c = chef.camera()
-      local x, y, z = chef.unit_position(h.u, h.node)
-      lost = not x or (not ours and not S.galaxy and c and (x - c.x) ^ 2 + (y - c.y) ^ 2 + (z - c.z) ^ 2 > 36)
+      local x, y, z = upos(h.u, h.node)
+      -- ship: kept while it's there (the cutscene camera framing a teammate's pod made the old check let go and
+      -- take the teammate's Helldiver); S.away hands the view to the game instead
+      lost = not x or (chef.in_mission() and not ours and not S.galaxy and c and (x - c.x) ^ 2 + (y - c.y) ^ 2 + (z - c.z) ^ 2 > 36)
     end
     if lost then
       if S.dead or S.down_any then
@@ -1092,6 +1134,8 @@ local function check_player(w)
   local live = {}
   for _, p in ipairs(S.parts) do if chef.unit_alive(p.u) then live[#live + 1] = p end end
   if #live < #S.parts then S.parts = live; table.insert(S.rescans, 1, S.t + 1) end
+  -- in a hellpod on the ship, or its cutscene: no scans (the launch makes and removes units all at once)
+  if S.nopod and not chef.in_mission() then return end
   if not S.head then
     -- right after your hellpod is seen: look every half second, so first person comes on as it lands
     local every = drop_seen() and 0.5 or 3
@@ -1104,6 +1148,7 @@ end
 -- one new piece a frame: its kind's mesh names (asked once per kind, ever)
 local function probe_one()
   if S.down_any and chef.in_mission() then return end
+  if S.nopod and not chef.in_mission() then return end
   for _, p in ipairs(S.parts) do
     if not p.groups then
       local g = groups_of[p.kind] or probe(p.u)
@@ -1198,7 +1243,7 @@ local function settled(it)
 end
 local function inside(watch, top, cur)
   if not (watch and S.head and chef.ray_box) then return false end
-  local x, y, z = chef.unit_position(S.head.u, S.head.node)
+  local x, y, z = upos(S.head.u, S.head.node)
   if not x then return false end
   for _, it in ipairs(watch.items) do
     -- the car you sit in skips the distance check: the watch's position is up to 2 s old, a car driving off leaves it
@@ -1227,7 +1272,7 @@ local function seat_anim()
   S.sa_t, S.sa = S.t, nil
   -- only next to a car or tank: no animation question anywhere else (see anim)
   if not S.head then return nil end
-  local x, y = chef.unit_position(S.head.u, S.head.node)
+  local x, y = upos(S.head.u, S.head.node)
   if not x then return nil end
   local near = S.frv_u ~= nil  -- the car you sit in counts as near however old the watch's position is
   for _, w in ipairs({ frv_watch, tank_watch }) do
@@ -1244,7 +1289,7 @@ local function frv_seat(it, x, y, z, gun)
   if seat == 'gunner' and not FRV_GUN[it.kind] then seat = nil end
   if not seat then  -- not a seat animation (getting in or out): keep the last seat, else by the side you sit on
     local fx, fy = chef.unit_rotation(it.unit)
-    local rx, ry = chef.unit_position(it.unit)
+    local rx, ry = upos(it.unit)
     local along = fx and rx and (x - rx) * fx + (y - ry) * fy or 1
     seat = S.seat or (along > 0 and 'driver' or 'passenger')
   end
@@ -1259,7 +1304,7 @@ end
 local function frv_near()
   local a = seat_anim()
   if not (FRV_ANIM[a] and frv_watch and S.head) then return false end
-  local x, y = chef.unit_position(S.head.u, S.head.node)
+  local x, y = upos(S.head.u, S.head.node)
   for _, it in ipairs(x and frv_watch.items or {}) do
     if abs(it.x - x) + abs(it.y - y) < 5 and (FRV_ANIM[a] ~= 'gunner' or FRV_GUN[it.kind]) then return it end
   end
@@ -1288,7 +1333,7 @@ local function mech_model(it)
 end
 local function at_emplacement()
   if not (empl_watch and S.head) then return false end
-  local x, y, z = chef.unit_position(S.head.u, S.head.root)
+  local x, y, z = upos(S.head.u, S.head.root)
   if not x then return false end
   local near, at
   for _, it in ipairs(empl_watch.items) do
@@ -1359,7 +1404,7 @@ local function stance(dt, ox, oy, oz, rx, ry)
   -- the get-up starts while the head is still low: anything but the animation you settled prone in counts
   -- (log 2026-11-06: head goes 0.73 -> 1.39 m in 0.2 s, the clipping comes before that)
   local an
-  if S.rising then
+  if S.rising and chef.in_mission() then
     an = anim(S.head.u)
     if an ~= S.an then log('anim %s (%s, head %.2f m over feet)', tostring(an), S.stance or 'stand', oz); S.an = an end
     S.prone_t = S.stance == 'prone' and (S.prone_t or 0) + dt or 0
@@ -1426,9 +1471,9 @@ local function belly_up(h)
   h.rt = h.rt or chef.unit_node(h.u, 'r_thigh') or false
   h.chest = h.chest or chef.unit_node(h.u, 'chest') or false
   if not (h.lt and h.rt and h.chest) then return nil end
-  local lx, ly, lz = chef.unit_position(h.u, h.lt)
-  local qx, qy, qz = chef.unit_position(h.u, h.rt)
-  local cx, cy, cz = chef.unit_position(h.u, h.chest)
+  local lx, ly, lz = upos(h.u, h.lt)
+  local qx, qy, qz = upos(h.u, h.rt)
+  local cx, cy, cz = upos(h.u, h.chest)
   if not (lx and qx and cx) then return nil end
   local ax, ay, az = qx - lx, qy - ly, qz - lz
   local sx, sy, sz = cx - (lx + qx) / 2, cy - (ly + qy) / 2, cz - (lz + qz) / 2
@@ -1458,8 +1503,8 @@ end
 -- the view position for this frame: head (its offset from the root smoothed), then the offsets along the view
 local function target(dt)
   local h = S.head
-  local hx, hy, hz = chef.unit_position(h.u, h.node)
-  local rx, ry, rz = chef.unit_position(h.u, h.root)
+  local hx, hy, hz = upos(h.u, h.node)
+  local rx, ry, rz = upos(h.u, h.root)
   if not (hx and rx) then S.head = nil; return end
   if S.prx and S.prz and S.wu == h.u then warp_check(rx - S.prx, ry - S.pry, rz - S.prz) end
   S.wu = h.u  -- a new body (reinforced) is no warp
@@ -1516,7 +1561,7 @@ local function target(dt)
     -- pointed at the feet once lying (log 2026-11-06)
     h.chest = h.chest or chef.unit_node(h.u, 'chest') or false
     local cx, cy, cz
-    if h.chest then cx, cy, cz = chef.unit_position(h.u, h.chest) end
+    if h.chest then cx, cy, cz = upos(h.u, h.chest) end
     local ex, ey, ez = cx and hx - cx, cx and hy - cy, cx and hz - cz
     local l = ex and sqrt(ex * ex + ey * ey + ez * ez) or 0
     if l > 0.05 then
@@ -1616,7 +1661,7 @@ local function aim_range(G, dx, dy, dz)
   local from, dir = { x = G[1], y = G[2], z = G[3] }, { x = dx, y = dy, z = dz }
   local best, bu
   for _, it in ipairs(enemy_watch.items) do
-    local x, y, z = chef.unit_position(it.unit)
+    local x, y, z = upos(it.unit)
     if x then
       local vx, vy, vz = x - G[1], y - G[2], z - G[3]
       local along = vx * dx + vy * dy + vz * dz
@@ -1772,7 +1817,7 @@ local function neck(w)
   if not (c and c.fx and bx) or abs(c.fx) + abs(c.fy) < 1e-3 then return end
   local vy, by_ = math.deg(math.atan2(c.fy, c.fx)), math.deg(math.atan2(by, bx))
   -- running: feet speed over the floor, eased over ~0.15 s
-  local rx, ry, rz = chef.unit_position(u, S.head.root)
+  local rx, ry, rz = upos(u, S.head.root)
   local dt = S.dt or 0.016
   if rx and n.px and dt > 0 then
     local vx, vy2 = (rx - n.px) / dt, (ry - n.py) / dt
@@ -1866,7 +1911,7 @@ local function place(w)
   if not S.act then
     -- third person: only a vehicle's own field of view, else the game's
     for _, k in ipairs(S.cams) do
-      local cam = (S.fv or k.fov0) and call('Unit.camera', k.u, k.slot)
+      local cam = (S.fv or k.fov0) and cam_of(k)
       if cam and S.fv then
         k.fov0 = k.fov0 or call('Camera.vertical_fov', cam)
         call('Camera.set_vertical_fov', cam, math.rad(S.fv))
@@ -1875,19 +1920,19 @@ local function place(w)
     return
   end
   if not (S.head and S.tx) then return end
-  local hx, hy, hz = chef.unit_position(S.head.u, S.head.node)
+  local hx, hy, hz = upos(S.head.u, S.head.node)
   if not hx then return end
   local scoped = false
   -- in a mech the game's camera sits in the mech's own frame (x right, y forward, z up from its root)
   local mx, my, mz, mfx, mfy
   if S.mech and not V[S.mech_pre .. 'tp_mech'] then
-    mx, my, mz = chef.unit_position(S.mech)
+    mx, my, mz = upos(S.mech)
     mfx, mfy = chef.unit_rotation(S.mech)
     local l = mfx and sqrt(mfx * mfx + mfy * mfy) or 0
     if l > 1e-4 then mfx, mfy = mfx / l, mfy / l else mfx = nil end
   end
   for ci, k in ipairs(S.cams) do
-    local cam = call('Unit.camera', k.u, k.slot)
+    local cam = cam_of(k)
     -- the game's own pose this frame (unless it's still ours from last frame): skip a camera the game already put at
     -- the head (its scope) or one far away (linked to something, so a world position would fling it)
     local cx, cy, cz = xyz(cam and call('Camera.local_position', cam))
@@ -1993,7 +2038,7 @@ local function set_act(act, why)
     -- other hand-offs: put the game's own last spot back and turn back (0.3.100)
     local w = chef.world()
     for _, k in ipairs(S.cams) do
-      local cam = call('Unit.camera', k.u, k.slot)
+      local cam = cam_of(k)
       if cam and k.wx and not k.main and k.home then
         -- not the game's view camera: back where the game keeps it, so our view never stays in it
         call('Camera.set_local_position', cam, k.u, Vec(k.home[1], k.home[2], k.home[3]))
@@ -2026,8 +2071,8 @@ local function galaxy_check(dt)
   local h = S.head
   local rx, ry, rz, hz
   if h and not chef.in_mission() then
-    rx, ry, rz = chef.unit_position(h.u, h.root)
-    hz = select(3, chef.unit_position(h.u, h.node))
+    rx, ry, rz = upos(h.u, h.root)
+    hz = select(3, upos(h.u, h.node))
   end
   local at = rx and hz and abs(rx - TABLE_X) < 0.3 and abs(ry - TABLE_Y) < 0.3 and abs(rz - TABLE_Z) < 0.3
     and hz - rz < 1.6 and anim(h.u) == 0  -- 0 = standing still (1 walk, 3 start, 5/6 stop)
@@ -2038,14 +2083,91 @@ local function galaxy_check(dt)
   end
 end
 
+-- is the game's view away from the head at x, y, z? The two checks 1.0.2 already used on the ship: its view camera's
+-- own pose (not what we wrote last frame) over 3.5 m away (the cutscene check), or, while the view isn't ours, the
+-- loader's camera over 6 m away (the check that used to let go of the Helldiver). nil = nothing tells this frame
+local function game_view_far(x, y, z)
+  local known, far = false, false
+  for _, k in ipairs(S.cams) do
+    if k.main then
+      local cam = cam_of(k)
+      local cx, cy, cz = xyz(cam and call('Camera.local_position', cam))
+      if cx and not (k.wx and abs(cx - k.wx) + abs(cy - k.wy) + abs(cz - k.wz) < 0.001) then
+        known = true
+        far = far or (cx - x) ^ 2 + (cy - y) ^ 2 + (cz - z) ^ 2 > 3.5 ^ 2
+      end
+    end
+  end
+  local c = not S.act and chef.camera()
+  if c and c.x then known = true; far = far or (c.x - x) ^ 2 + (c.y - y) ^ 2 + (c.z - z) ^ 2 > 36 end
+  if known then return far end
+end
+
+-- hellpods, whatever the settings (tp_pod only picks the view, every frame, before anything asks the body):
+-- S.pod   in a hellpod. Ship: the head down at prone height (nothing else on the ship lays you down, 2026-11-07),
+--         from climbing in until the ship unloads. Mission: the drop, from the game camera falling 25+ m/s for
+--         0.25 s until you step out of the landed pod (1.5 m from where it landed, or 6 s after landing)
+-- S.away  ship: the game's view over 3.5 m from your head (the launch cutscene, a terminal's close-up): the game's
+--         view, as when the old 6 m check let go of the Helldiver, but the Helldiver is kept
+-- S.nopod the body is left alone: no animation questions, and on the ship no scans for another Helldiver and no
+--         mesh probes. Nothing here depends on saved pod spots or on which keys you use
+local function pod_guard(dt)
+  local h = S.head
+  local hx, hy, hz, rx, ry, rz
+  if h then hx, hy, hz = upos(h.u, h.node); rx, ry, rz = upos(h.u, h.root) end
+  if chef.in_mission() then
+    S.away, S.spod, S.slow_t, S.sup_t = false, false, 0, 0
+    local d = S.mdrop
+    if not d and (S.pfall_t or 0) >= 0.25 then d = { t = S.t }; S.mdrop = d; log('hellpod drop: the game camera is falling') end
+    if d then
+      if (S.pfall_t or 0) > 0.1 then d.land, d.lx, d.ly = nil, nil, nil  -- falling again (one frame is a camera cut)
+      elseif not d.land then d.land = S.t; log('hellpod landed') end
+      if d.land then
+        if rx and not d.lx then d.lx, d.ly = rx, ry end
+        local out = rx and d.lx and (rx - d.lx) ^ 2 + (ry - d.ly) ^ 2 > 1.5 ^ 2
+        if out or S.t - d.land > 6 or S.t - d.t > 60 then
+          S.mdrop = nil
+          log('out of the hellpod (%s)', out and 'stepped out' or S.t - d.land > 6 and '6 s after landing' or 'over a minute')
+        end
+      end
+    end
+    S.pod = S.mdrop ~= nil
+  else
+    S.mdrop = nil
+    if hz and rz then
+      local oz = hz - rz
+      S.shmax = max(S.shmax or 1.2, min(oz, 1.85))
+      local r = oz / S.shmax
+      S.slow_t = r < 0.5 and (S.slow_t or 0) + dt or 0
+      S.sup_t = r > 0.8 and (S.sup_t or 0) + dt or 0
+      if not S.spod and S.slow_t > 0.1 then S.spod = true; log('hellpod (ship): head down to %.2f m over the feet, the body is left alone', oz) end
+    end
+    local far = hx and game_view_far(hx, hy, hz)
+    if far ~= nil then
+      S.away_t = far == (S.away or false) and 0 or (S.away_t or 0) + dt
+      if S.away_t > (far and 0.1 or 0.5) then S.away, S.away_t = far, 0; log('ship: game camera %s', far and 'away from the head' or 'back') end
+    end
+    -- standing again with the camera back (an emote, a missed climb): first person again
+    if S.spod and not S.away and (S.sup_t or 0) >= 1 then S.spod = false; log('hellpod (ship): standing again') end
+    S.pod = S.spod or false
+  end
+  local at_table = rx and abs(rx - TABLE_X) < 1 and abs(ry - TABLE_Y) < 1
+  S.nopod = S.pod or (S.away and not at_table) or false
+end
+
 -- mission terminals: the Helldiver state machine plays its own states on layer 8 (the 9th value of
 -- Unit.animation_get_state): 252 step on, 254 standing at it, 255-265 the key inputs, 253 stepping off
 -- (in-game log 2026-11-07, matches the avatar_helldiver state machine)
 local TERM_STATES = {}
 for i = 252, 265 do TERM_STATES[i] = i ~= 253 end
+-- Only on foot and standing (never down, dead, diving, getting up, seated or in a hellpod: anim() refuses most of
+-- those too), ten times a second: it asks the engine straight, past the loader's guard (see anim)
 local function term_check()
   local h = S.head
-  if not (h and chef.in_mission()) then S.term = false; return end
+  local busy = S.down_any or S.dead or S.down or S.diving or S.getup or S.pod or S.nopod or S.frv or S.mech or S.empl or S.tank
+  if not (h and chef.in_mission()) or busy then S.term, S.term_t = false, nil; return end
+  if S.term_t and S.t < S.term_t then return end
+  S.term_t = S.t + 0.1
   local st = { anim(h.u, true) }
   local at = TERM_STATES[st[9]] or false
   if at ~= (S.term or false) then
@@ -2057,7 +2179,6 @@ end
 -- hellpod (ship): the diver's animation, layer 13 (the 14th value of Unit.animation_get_state): 15 from the moment
 -- you use a pod (drop zone screen), 17 once inside, back to 3 as you climb out (1.0.27 log 2026-11-09). Game camera for
 -- all of it, never keys or the mouse (user). Mission: first person as soon as the new Helldiver exists.
-local POD_STATES = { [15] = true, [17] = true }
 local function pod_check()
   local h = S.head
   if not h then return end  -- head lost in the pod (cutscene camera far off): keep the state
@@ -2066,7 +2187,10 @@ local function pod_check()
     if h.u ~= S.podu then S.podu = h.u; log('new Helldiver: first person at once') end
     return
   end
-  local use = POD_STATES[select(14, anim(h.u, true))] or false
+  -- nothing asked once the body is down in the pod or the launch cutscene has the camera (S.nopod): keep the state
+  local l13 = select(14, anim(h.u, true))
+  if l13 == nil then return end
+  local use = l13 == 15 or l13 == 17
   if use ~= (S.puse or false) then S.puse = use; log('hellpod %s', use and 'in use' or 'left') end
 end
 
@@ -2094,7 +2218,8 @@ local function update_act()
   elseif S.dead then why = 'dead'
   elseif binds.peek and binds.peek.down() and not S.panel then why = 'peek key'
   elseif V.tp_galaxy and S.galaxy then why = 'galactic map'
-  elseif V.tp_pod and S.puse then why = 'hellpod'  -- user: the game's own view from using a pod
+  elseif V.tp_pod and (S.puse or S.pod) then why = 'hellpod'  -- user: the game's own view from using a pod
+  elseif S.away and not chef.in_mission() then why = 'game camera away'  -- whatever the settings (the cutscene)
   elseif V.tp_term and S.term then why = 'terminal'
   elseif V.tp_menus and S.map_open then why = 'map'
   elseif V.tp_menus and S.strat_open then why = 'stratagems'
@@ -2417,7 +2542,7 @@ end
 -- view still in the dead body (a fall through the dive path, so 'knocked down' never handed over). A new Helldiver
 -- showing up (the reinforcement), or the cameras changing while lying down = the game's view until someone stands.
 local function death_check()
-  if not chef.in_mission() then S.dead, S.corpse, S.avs, S.av_gen = false, nil, nil, nil; return end
+  if not chef.in_mission() then S.dead, S.corpse, S.avs, S.av_gen, S.down_any = false, nil, nil, nil, false; return end
   local lying = S.head and (S.stance == 'prone' or S.down or S.dive)
   S.down_any = lying or S.dead or S.getup or false
   if cam_watch.generation ~= S.dgen then
@@ -2429,7 +2554,7 @@ local function death_check()
     if changed and lying and not S.dead then S.dead = true; log('cameras changed while lying (%s): game camera until up', S.stance or '?') end
   end
   local h = S.head
-  if S.dead and h and h.u ~= S.corpse and not lying then S.dead = false; log('up: first person again') end
+  if S.dead and h and h.u ~= S.corpse and not lying and not S.pod then S.dead = false; log('up: first person again') end
 end
 
 function M.update(dt)
@@ -2450,7 +2575,10 @@ function M.update(dt)
     S.ghid, S.gst, S.gsaid = {}, {}, {}
     S.last_scan, S.rescans, S.cam_gen = nil, {}, nil
     S.hr = nil
-    S.ad, S.aw, S.podu, S.puse = nil, nil, nil, false
+    S.ad, S.aw, S.podu, S.puse, S.pod = nil, nil, nil, false, false
+    S.away, S.away_t, S.spod, S.slow_t, S.sup_t, S.shmax, S.nopod, S.mdrop, S.pfall_t = false, 0, false, 0, 0, nil, false, nil, 0
+    S.calm_t = 0
+    S.down_any, S.getup, S.rising = false, false, false
     S.act, S.down, S.stance, S.hmax, S.fv = false, false, nil, nil, nil
     S.mech, S.frv, S.empl, S.tank, S.tpass = false, false, false, false, false
     S.dead, S.corpse, S.avs, S.av_gen, S.dgen, S.dcams = false, nil, nil, nil, nil, nil
@@ -2463,10 +2591,14 @@ function M.update(dt)
     local vz = (gc.z - S.lcz) / dt
     if vz < 0 then S.fall_max = max(S.fall_max or 0, -vz < 150 and -vz or 0) end
     S.fall_t = (vz < -12 and vz > -150) and (S.fall_t or 0) + dt or 0
+    S.pfall_t = (vz < -25 and vz > -150) and (S.pfall_t or 0) + dt or 0
+    S.calm_t = vz > -12 and (S.calm_t or 0) + dt or 0
     if S.fall_t >= 0.25 and not drop_seen() then
       S.drop_t = S.t
       if others_here() then log('hellpod drop seen (game camera falling %.0f m/s)', -vz) end
     end
+  elseif not gc then
+    S.calm_t = 0
   end
   S.lcz = gc and gc.z
   refresh_cams()
@@ -2496,7 +2628,7 @@ function M.update(dt)
     -- tank seats are known by animation alone, so the tank is just the nearest one: no engine call on a tank at all
     local tk = false
     if TANK_ANIM[seat_anim()] and tank_watch and S.head then
-      local hx, hy = chef.unit_position(S.head.u, S.head.node)
+      local hx, hy = upos(S.head.u, S.head.node)
       for _, t in ipairs(hx and tank_watch.items or {}) do
         if abs(t.x - hx) + abs(t.y - hy) < 7 then tk = t end
       end
@@ -2524,7 +2656,11 @@ function M.update(dt)
   end
   S.dt = dt
   death_check()
-  if S.on and S.head then target(dt) end
+  pod_guard(dt)
+  -- the game's view on the ship (its cutscene camera, or in a pod with Third person in the hellpod): the body isn't
+  -- followed until it's back
+  local ship_off = not chef.in_mission() and (S.away or S.pod and V.tp_pod)
+  if S.on and S.head and not ship_off then target(dt) end
   if S.on and V.tp_galaxy then galaxy_check(dt) else S.galaxy = false end   -- every frame: the head shows at once
   if S.on and V.tp_term then term_check() else S.term = false end
   if S.on and V.tp_pod then pod_check() else S.puse = false end
