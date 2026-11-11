@@ -3647,6 +3647,27 @@ function HUD.body(it)
   end
   return u
 end
+-- glass cockpit (our game patch, shared by every exosuit): the cockpit panels have their own material slots, solid
+-- (the game's materials) by default; glass only while you sit in that exosuit. A body without our 6 slots is skipped.
+local GLASS = { slots = { 'm_shodan_glass_body', 'm_shodan_glass_base', 'm_shodan_glass_lights' },
+                solid = { '23a41cbe0203470f', '7f98d17ebc5f4757', 'ee8a6d805ca642b4' }, mat = '363ae2fcdfdef63e' }
+function HUD.glass(u, on)
+  if not u then return end
+  local n = call('Mesh.num_materials', call('Unit.mesh', u, 'g_combat_walker'))
+  if n ~= 6 then once('glassn', 'glass cockpit: not in this exosuit\'s model (%s materials, ours has 6)', tostring(n)); return end
+  local done = 0
+  for k, slot in ipairs(GLASS.slots) do
+    local id, why = call('IdString64.from_hex', on and GLASS.mat or GLASS.solid[k])  -- a fresh id each time (never kept)
+    if id == nil then once('glassid', 'glass cockpit: no material id (%s)', tostring(why))
+    elseif call('Application.can_get', 'material', id) ~= true then
+      once('glassmat' .. tostring(on), 'glass cockpit: %s material not loaded', on and 'glass' or 'solid')
+    else
+      local _, no = call('Unit.set_material', u, slot, id)
+      if not no then done = done + 1 else once('glass' .. slot, 'glass cockpit: %s refused (%s)', slot, tostring(no)) end
+    end
+  end
+  log('glass cockpit %s (%d of 3 panel slots)', on and 'on' or 'off', done)
+end
 function HUD.goid(v) return type(v) == 'number' and v % 1 == 0 and v > 0 and v < 32767 end
 function HUD.fields(id)
   if not HUD.goid(id) or call('GameSession.game_object_exists', HUD.ses, id) ~= true then return nil end
@@ -4588,6 +4609,8 @@ local function step(dt)
       for _, m in ipairs(MECHS) do if m.pre == S.mech_pre then nm = m.name end end
       if mech then log('in a mech (%s)', nm) else log('out of the mech') end
     end
+    local body = S.mech_it and HUD.body(S.mech_it) or false
+    if body ~= S.glass_u then HUD.glass(S.glass_u, false); S.glass_u = body; HUD.glass(body, true) end
     S.mech, S.empl = mech, at_emplacement()
   end
   -- after a reset (the key, or an error the mod got over): first person as it was, whatever Start on says
