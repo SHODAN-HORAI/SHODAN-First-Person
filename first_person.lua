@@ -1892,13 +1892,15 @@ local function target(dt)
   local bfoot = not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel or S.diving or S.getup or S.down or S.eyes)
   if V.bob_boost > 0 and bfoot then
     local bo = S.bob
-    if not bo then bo = { ox, oy, oz }; S.bob = bo
+    -- (a stance change moves the head far more than a step: the average starts again there, so it isn't boosted)
+    if not bo or bo[4] ~= (S.stance or 'stand') then bo = { ox, oy, oz, S.stance or 'stand' }; S.bob = bo
     else
       local g = 1 - exp(-dt / 0.4)
       bo[1], bo[2], bo[3] = bo[1] + (ox - bo[1]) * g, bo[2] + (oy - bo[2]) * g, bo[3] + (oz - bo[3]) * g
     end
     local kb = V.bob_boost / 100
-    bbx, bby, bbz = (ox - bo[1]) * kb, (oy - bo[2]) * kb, (oz - bo[3]) * kb
+    local function cl(v) return max(-0.05, min(0.05, v)) end
+    bbx, bby, bbz = cl((ox - bo[1]) * kb), cl((oy - bo[2]) * kb), cl((oz - bo[3]) * kb)
   else S.bob = nil end
   local c = chef.camera()
   local fx, fy, fz = 0, 1, 0
@@ -2122,11 +2124,11 @@ end
 -- far along the camera line they pass closest is how far away the shot lands. Read
 -- only from a gun in both hands, steady, along the aim, not while the view turns fast, a reload tilts it or the
 -- stratagem key is down; with nothing read the last distance holds. Followed in 1/distance at one even pace: the turn
--- the crosshair fix makes goes with 1/distance, so every change looks the same speed (paced in metres, 100 to
+-- the crosshair fix makes goes with 1/distance, so every change looks the same speed (paced in meters, 100 to
 -- 10 m would crawl at the start and rush at the end).
 local GR = { st = {} }
 function GR.range_of(d, mn) return d < 15.8 and mn or (d < 37 and 25 or (d < 70 and 50 or 100)) end
--- one reading along the game's line from (S.gcx, S.gcy, S.gcz): metres, 100 (the lines parallel: far), or nil
+-- one reading along the game's line from (S.gcx, S.gcy, S.gcz): meters, 100 (the lines parallel: far), or nil
 function GR.read(fx, fy, fz, dt)
   local st = GR.st
   local fire = chef.mouse_down('left')
@@ -2137,7 +2139,7 @@ function GR.read(fx, fy, fz, dt)
   local pf = st.f
   if pf and dt > 0 and math.deg(math.acos(max(-1, min(1, pf[1] * fx + pf[2] * fy + pf[3] * fz)))) / dt > 40 then st.turn = S.t end
   st.f = { fx, fy, fz }
-  if S.shield then return V.aim_dist end  -- the shield's one-handed gun crosses the view a few metres out: fixed
+  if S.shield then return V.aim_dist, true end  -- the shield's one-handed gun crosses the view a few meters out: fixed
   local g = S.gheld
   if not (g and S.t - g.t < 0.3 and g.o and chef.unit_alive(g.u)) then st.calm = nil; return end
   local q = call('Unit.world_rotation', g.u, 1)
@@ -2176,7 +2178,7 @@ function GR.read(fx, fy, fz, dt)
   end
   local w0x, w0y, w0z = S.gcx - p[1], S.gcy - p[2], S.gcz - p[3]
   local dd = fx * w0x + fy * w0y + fz * w0z
-  -- where the camera line and a gun line pass closest: metres along the camera line, or false (they don't meet)
+  -- where the camera line and a gun line pass closest: meters along the camera line, or false (they don't meet)
   local function cross(gx, gy, gz)
     local b = fx * gx + fy * gy + fz * gz
     local den = 1 - b * b
@@ -2204,10 +2206,10 @@ function GR.read(fx, fy, fz, dt)
   return d
 end
 -- the distance to line up at, from a reading (nil: hold): Nearest and the ranges applied, then glided
-function GR.dist(d, dt)
+function GR.dist(d, dt, fixed)
   local st, mn = GR.st, V.gun_nearest
   if d then d = max(mn, min(100, d)) end
-  if d and V.gun_steps then
+  if d and V.gun_steps and not fixed then
     local s = st.step or GR.range_of(d, mn)
     local function down_to(x) return x < 13.5 and mn or (x < 32 and 25 or 50) end
     -- up: from Nearest at 18 m, 25 -> 50 at 38, 50 -> 100 at 75; down: below 13.5, 32 and 62 m
@@ -2294,7 +2296,7 @@ local function aim_fix(k, cam, dt)
   local D, src
   if on and not S.draw then
     local gm = V.gun_measure and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel)
-    if gm then GR.d = GR.dist(GR.read(dx, dy, dz, dt), dt)
+    if gm then local gd, gfix = GR.read(dx, dy, dz, dt); GR.d = GR.dist(gd, dt, gfix)
     elseif GR.d then GR.d, GR.st = nil, {} end
     S.gund = GR.d
     -- fixed distance unless aim_range (aiming) or hip_range (hip; enemy ranging there turned the view far too hard, 0.3.109)
@@ -2533,7 +2535,7 @@ local function turn_hold(k, cam, dt)
   local face = V.term_face and S.term and not V.tp_term and S.head
   local hl = sqrt(fx * fx + fy * fy)
   local bx, by
-  if face then bx, by = chef.unit_rotation(S.head.u) end
+  if (face or (k.tw or 0) > 0) and S.head then bx, by = chef.unit_rotation(S.head.u) end
   local bl = (finite(bx) and finite(by)) and sqrt(bx * bx + by * by) or 0
   local want_t = face and bl > 0.5 and hl > 0.2 and (fx * bx + fy * by) / (hl * bl) < 0.9
   k.tw = want_t and min(1, (k.tw or 0) + dt * 4) or max(0, (k.tw or 0) - dt * 4)
@@ -3887,7 +3889,7 @@ local function step(dt)
   -- Aim from the game: its upper-body layer aims at 59 standing, 53 prone, and 0 crouched (the legs' layer 2 or 3).
   -- The game knows a toggle and a controller trigger the mouse button doesn't; with no layers (a seat check refused,
   -- the camera settling) the mouse button decides as before
-  if V.aim_game and not P.open then
+  if V.aim_game and not P.open and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) then
     local L = layers()
     if L then
       local l4, l22 = L[4], L[22]
@@ -3905,8 +3907,17 @@ local function step(dt)
   if ra ~= (S.runaim or false) then log('aim: %s', ra and string.format('running, lined up at %d m', V.run_dist) or 'running ended') end
   S.runaim = ra
   neck(w)
-  -- in a mech the game narrows its view as the mech aims: first person keeps the widest seen in this mech
-  if S.mech and S.act and S.gfov then S.mwide = max(S.mwide or S.gfov, S.gfov) elseif not S.mech then S.mwide, S.md, S.mg = nil, nil, nil end
+  -- in a mech the game narrows its view as the mech aims: first person keeps the widest seen in this mech. The game
+  -- camera cutting somewhere else (1.5 m in a frame: from the on-foot camera while climbing in to the mech's own)
+  -- starts the learning again, so the on-foot field of view is never taken as the mech's; an aim zoom keeps its spot
+  if S.mech then
+    local g = S.mgc
+    if S.gcx and (not g or (S.gcx - g[1]) ^ 2 + (S.gcy - g[2]) ^ 2 + (S.gcz - g[3]) ^ 2 > 2.25) then S.mwide, S.mwt = nil, S.t end
+    if S.gcx then S.mgc = S.mgc or {}; S.mgc[1], S.mgc[2], S.mgc[3] = S.gcx, S.gcy, S.gcz end
+    S.mwt = S.mwt or S.t
+  end
+  if S.mech and S.act and S.gfov and S.t - S.mwt >= 0.1 then S.mwide = max(S.mwide or S.gfov, S.gfov)
+  elseif not S.mech then S.mwide, S.md, S.mg, S.mwt, S.mgc = nil, nil, nil, nil, nil end
   local mfv = S.mech and V[S.mech_pre .. 'mech_fov']
   if mfv == 0 and V.fov == 0 and S.act and V[S.mech_pre .. 'mech_wide'] and S.mwide then mfv = S.mwide end
   local vf = S.frv and V[S.frv_pre .. 'frv_fov'] or S.tpass and V[S.tpass .. '_fov'] or S.mech and mfv
@@ -3928,7 +3939,7 @@ local function step(dt)
     if V.aim_zoom_game and S.gfov and S.ghip and S.ghip > 1 then
       mag = max(0.15, min(1.2, math.tan(math.rad(S.gfov) / 2) / math.tan(math.rad(S.ghip) / 2)))
     end
-    extra = 1 - (V.aim_zoom + (S.shield and V.shield_zoom or 0)) / 100
+    extra = max(0.15, (1 - V.aim_zoom / 100) * (1 - (S.shield and V.shield_zoom or 0) / 100))
   end
   -- Field of view at GAME: nothing written, except while aiming with a zoom of our own (Extra aim zoom, or not
   -- following the game's): then from the game's hip field of view
