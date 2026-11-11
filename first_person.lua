@@ -49,9 +49,10 @@ for k in pairs(EMPL_DIST) do EMPL_KINDS[k] = true end
 -- 90-94), the Gator (driver 72, leaving 77; gunner 83, getting in 75, leaving 81) and the tank crew (96 and 97 the
 -- gunner; 102 the driver and the passengers alike: the game camera sits about 11 m behind the driver and 4 m behind a
 -- passenger, which tells them apart)
-local L14_PELICAN = { [89] = true, [90] = true, [91] = true, [92] = true, [93] = true, [94] = true }
-local L14_GATOR = { [72] = 'gator', [77] = 'gator', [83] = 'ggun', [75] = 'ggun', [81] = 'ggun' }
-local L14_TANK = { [96] = 'crew', [97] = 'crew', [102] = 'driver' }
+local L14 = {}
+L14.PELICAN = { [89] = true, [90] = true, [91] = true, [92] = true, [93] = true, [94] = true }
+L14.GATOR = { [72] = 'gator', [77] = 'gator', [83] = 'ggun', [75] = 'ggun', [81] = 'ggun' }
+L14.TANK = { [96] = 'crew', [97] = 'crew', [102] = 'driver' }
 
 ---------------------------------------------------------------------------------------------------- settings
 local TABS = {
@@ -370,6 +371,19 @@ local TABS = {
       hint = 'Nothing nearer the view than this is drawn in this mech: the cockpit frame and glass (about 0.6), the arm housing beside GUN LINE (about 1.2). Works on every mech, no extra files.' },
     { id = 'mech_wide', label = 'Keep the widest field of view', toggle = true, def = true,
       hint = 'The game narrows the view while the mech aims. On = first person keeps the widest seen in this mech (Field of view at SAME and GAME).' },
+    { head = 'MECH HUD' },
+    { id = 'hud_on', label = 'Mech HUD', toggle = true, def = true,
+      hint = 'While you drive a mech: the hull exact, each part in the game damage steps, both arms and their rounds (bottom right).' },
+    { id = 'hud_tp', label = 'Also in third person', toggle = true, def = true,
+      hint = 'Off = the Mech HUD only while first person is on.' },
+    { id = 'hud_size', label = 'Size', min = 50, max = 200, step = 5, def = 100, unit = ' %',
+      hint = 'How big the Mech HUD is drawn.' },
+    { id = 'hud_right', label = 'From the right', min = 0, max = 1200, step = 10, def = 40, unit = ' px',
+      hint = 'Distance from the right edge (at 1080 lines; scales with the screen).' },
+    { id = 'hud_bottom', label = 'From the bottom', min = 0, max = 800, step = 10, def = 40, unit = ' px',
+      hint = 'Distance from the bottom edge (at 1080 lines; scales with the screen).' },
+    { id = 'hud_alpha', label = 'Opacity', min = 10, max = 100, step = 5, def = 85, unit = ' %',
+      hint = 'How solid the Mech HUD is.' },
     { head = 'EMPLACEMENT' },
     { id = 'empl_pick', global = true, label = 'Emplacement to edit', min = 1, max = #EMPLS, step = 1, def = 1,
       hint = 'Pick the emplacement the rows below change. Each one keeps its own settings.' },
@@ -1543,7 +1557,7 @@ local function tank_seat(it)
   local seat = TANK_ANIM[anim]
   -- the seat layer: 96/97 the gunner; 102 the driver when the game camera sits more than 7 m back (a passenger's sits
   -- about 4 m back), kept while it stays 102 (first person writes over the shown camera)
-  local l = S.l14 and L14_TANK[S.l14]
+  local l = S.l14 and L14.TANK[S.l14]
   if l == 'crew' then seat = 'crew'
   elseif l == 'driver' and seat ~= 'passenger' and seat ~= 'crew' then
     local far = game_cam_far()
@@ -2584,7 +2598,7 @@ end
 -- galactic map (ship only): using the table puts your feet on one fixed spot and leans you over it, head about
 -- 1.4-1.5 m above your feet; standing or walking it's 1.65-1.7 (probe log, 2026-11-06). Leaving stands you up first.
 -- shortcut: the spot is the Super Destroyer's table in world units; a ship layout change would need a new probe
-local TABLE_X, TABLE_Y, TABLE_Z = 0, 12.97, 19.57
+local TABLE = { 0, 12.97, 19.57 }   -- x, y, z
 local function galaxy_check(dt)
   local h = S.head
   local rx, ry, rz, hz
@@ -2592,7 +2606,7 @@ local function galaxy_check(dt)
     rx, ry, rz = upos(h.u, h.root)
     hz = select(3, upos(h.u, h.node))
   end
-  local at = rx and hz and abs(rx - TABLE_X) < 0.3 and abs(ry - TABLE_Y) < 0.3 and abs(rz - TABLE_Z) < 0.3
+  local at = rx and hz and abs(rx - TABLE[1]) < 0.3 and abs(ry - TABLE[2]) < 0.3 and abs(rz - TABLE[3]) < 0.3
     and hz - rz < 1.6 and anim(h.u) == 0  -- 0 = standing still (1 walk, 3 start, 5/6 stop)
   S.gal_off = at and 0 or (S.gal_off or 0) + dt
   if at and not S.galaxy or S.galaxy and S.gal_off > 0.25 then
@@ -2683,7 +2697,7 @@ local function pod_guard(dt)
     if S.spod and not S.away and (S.sup_t or 0) >= 1 then S.spod = false; log('hellpod (ship): standing again') end
     S.pod = S.spod or false
   end
-  local at_table = rx and abs(rx - TABLE_X) < 1 and abs(ry - TABLE_Y) < 1
+  local at_table = rx and abs(rx - TABLE[1]) < 1 and abs(ry - TABLE[2]) < 1
   S.nopod = S.pod or (S.away and not at_table) or false
 end
 
@@ -2801,10 +2815,10 @@ for c in ('abcdefghijklmnopqrstuvwxyz0123456789'):gmatch('.') do CAPTURE_KEYS[#C
 for _, k in ipairs({ 'insert', 'home', 'end', 'page up', 'page down', 'tab', 'caps lock', 'left alt', 'right alt',
   'left ctrl', 'right ctrl', 'numpad 0', 'numpad 1', 'numpad 2', 'numpad 3', 'numpad 4', 'numpad 5', 'numpad 6',
   'numpad 7', 'numpad 8', 'numpad 9' }) do CAPTURE_KEYS[#CAPTURE_KEYS + 1] = k end
-local CAPTURE_MOD_LIST = { 'left ctrl', 'right ctrl', 'left alt', 'right alt' }
+P.MODLIST = { 'left ctrl', 'right ctrl', 'left alt', 'right alt' }
 local CAPTURE_MOD = {}
-for _, m in ipairs(CAPTURE_MOD_LIST) do CAPTURE_MOD[m] = true end
-local COMBO_MODS = { 'ctrl', 'shift', 'alt' }   -- the loader's order
+for _, m in ipairs(P.MODLIST) do CAPTURE_MOD[m] = true end
+P.COMBO = { 'ctrl', 'shift', 'alt' }   -- the loader's order
 
 local function open_panel(on)
   P.open, P.capture, P.capmod, P.drag, S.panel = on, nil, nil, nil, on
@@ -2881,6 +2895,131 @@ local function draw_msg(dt)
   chef.rect(x, y, w, h, col(12, 14, 18, floor(220 * a)), L)
   chef.rect(x, y, w, floor(3 * s), col(YEL[1], YEL[2], YEL[3], floor(255 * a)), L + 1)
   chef.text(x + floor(24 * s), y + floor(15 * s), S.msg, px, col(YEL[1], YEL[2], YEL[3], floor(255 * a)), L + 2)
+end
+
+-- Mech HUD (MECHS tab): the mech you're in, from what the game shares between players about it (read only, through
+-- GameSession). The
+-- mod already knows the mech body it put you in, so only that body's object is read, 10 times a second, and only while
+-- you're in it, alive and not down (its field reads once crashed the game on a body being torn down). Field meanings
+-- are that HUD's tester's finds: 56 hull, 65 its most, 57 the parts' damage steps (2 bits each, 3 whole .. 0 worst:
+-- front left, front right, rear, hips, right leg, left leg), 68 which part is destroyed (2 bits each, 1 = destroyed,
+-- order front L, front R, rear, hips, left leg, right leg), 19[6] the arm objects (left, right). An arm object holds
+-- the pair 699050, 800 at some field d, and field d - 1 turns 2 once that arm is destroyed.
+local HUD = { next = 0 }
+-- per mech model (its settings prefix): left and right arm, their name and the field with the rounds left (and spare)
+HUD.ARMS = {
+  [''] = { { 'ROCKETS', 6 }, { 'MINIGUN', 6 } },
+  em_ = { { 'AUTOCANNON', 6 }, { 'AUTOCANNON', 6 } },
+  lb_ = { { 'FLAME', 3 }, { 'CANNON', 12 } },
+  bt_ = { { 'SHIELD' }, { 'SHOTGUN', 13, 11 } },
+}
+HUD.D68 = { [0] = 1, [1] = 2, [2] = 3, [3] = 4, [4] = 6, [5] = 5 }   -- field 68's pair -> drawn part (1-based)
+-- the body unit of the mech item you're in (an arm's item: the nearest body of a known model)
+function HUD.body(it)
+  if PRE[it.kind] then return it.unit end
+  local best, u = 6, nil
+  for _, o in ipairs(mech_watch and mech_watch.items or {}) do
+    local d = PRE[o.kind] and abs(o.x - it.x) + abs(o.y - it.y)
+    if d and d < best then best, u = d, o.unit end
+  end
+  return u
+end
+function HUD.goid(v) return type(v) == 'number' and v % 1 == 0 and v > 0 and v < 32767 end
+function HUD.fields(id)
+  if not HUD.goid(id) or call('GameSession.game_object_exists', HUD.ses, id) ~= true then return nil end
+  local f = call('GameSession.game_object_field_batched', HUD.ses, id, {})
+  return type(f) == 'table' and f or nil
+end
+function HUD.read()
+  if S.mech ~= HUD.it then HUD.it, HUD.ub = S.mech, S.mech_it and HUD.body(S.mech_it) or nil end
+  local u = HUD.ub
+  if not (V.hud_on and S.mech and u) or S.dead or S.down or not chef.unit_alive(u) then
+    HUD.info, HUD.ses, HUD.u, HUD.arms = nil, nil, nil, nil
+    return
+  end
+  if S.t < HUD.next then return end
+  HUD.next = S.t + 0.1
+  if not HUD.ses then
+    HUD.ses = call('Network.game_session')
+    HUD.sync = HUD.ses and call('GameSession.unit_synchronizer', HUD.ses)
+    if not HUD.sync then HUD.ses = nil; return end
+  end
+  if HUD.u ~= u then HUD.u, HUD.id, HUD.arms = u, call('UnitSynchronizer.unit_to_game_object_id', HUD.sync, u), nil end
+  local f = HUD.fields(HUD.id)
+  local hull, most = f and f[56], f and f[65]
+  if not (type(hull) == 'number' and type(most) == 'number' and most > 0 and most <= 100000 and hull >= 0 and hull <= most) then
+    HUD.info = nil
+    return
+  end
+  local I = HUD.info or { part = {}, dead = {}, arm = { {}, {} } }
+  I.hull, I.most, I.pre = hull, most, S.mech_pre
+  local p = f[57]
+  for i = 1, 6 do I.part[i], I.dead[i] = 3, false end
+  if type(p) == 'number' and p % 1 == 0 and p >= 0 then
+    for i = 0, 5 do I.part[i + 1] = floor(p / 4 ^ i) % 4 end
+  end
+  local d68 = f[68]
+  if type(d68) == 'number' and d68 % 1 == 0 and d68 >= 0 then
+    for i = 0, 5 do if floor(d68 / 4 ^ i) % 4 == 1 then I.dead[HUD.D68[i]] = true end end
+  end
+  -- the arms: their objects hang off the body (a gone object that was there: destroyed)
+  local kids = type(f[19]) == 'table' and type(f[19][6]) == 'table' and f[19][6] or {}
+  local spec = HUD.ARMS[S.mech_pre] or HUD.ARMS['']
+  HUD.arms = HUD.arms or {}
+  for i = 1, 2 do
+    local a, sp, af = I.arm[i], spec[i], HUD.fields(kids[i])
+    a.name = sp[1]
+    if af then HUD.arms[i] = true end
+    local d
+    if af then for k = 2, 40 do if af[k] == 699050 and af[k + 1] == 800 then d = k; break end end end
+    a.dead = (not af and HUD.arms[i]) or (d and af[d - 1] == 2) or false
+    local n, s = af and sp[2] and tonumber(af[sp[2]]), af and sp[3] and tonumber(af[sp[3]])
+    a.ammo = n and (s and string.format('%d/%d', floor(n), floor(s)) or tostring(floor(n))) or nil
+  end
+  HUD.info = I
+end
+-- the steps' colors: 3 whole (gray), 2 damaged (yellow), 1 badly (orange), 0 about to break (red), destroyed dark red
+HUD.STEP = { [3] = { 150, 156, 162 }, [2] = { 230, 200, 60 }, [1] = { 235, 130, 40 }, [0] = { 220, 50, 40 } }
+function HUD.draw()
+  local I = HUD.info
+  if not I or P.open or not (S.act or V.hud_tp) or not chef.in_mission() then return end
+  local sw, sh = chef.screen()
+  local s = sh / 1080 * V.hud_size / 100
+  local a = floor(255 * V.hud_alpha / 100)
+  local w, h = floor(230 * s), floor(150 * s)
+  local x0, y0 = floor(sw - V.hud_right * sh / 1080 - w), floor(V.hud_bottom * sh / 1080)
+  local L = chef.TOP + 70
+  local function box(x, y, bw, bh, c, layer) chef.rect(x0 + floor(x * s), y0 + floor(y * s), floor(bw * s), floor(bh * s), c, layer or L + 1) end
+  chef.rect(x0, y0, w, h, col(10, 12, 16, floor(a * 0.55)), L)
+  -- the hull: exact, a bar and its number
+  local k = I.hull / I.most
+  local hc = k > 0.5 and HUD.STEP[3] or k > 0.25 and HUD.STEP[2] or HUD.STEP[0]
+  box(10, 128, 210, 10, col(40, 44, 50, a))
+  box(10, 128, 210 * k, 10, col(hc[1], hc[2], hc[3], a), L + 2)
+  chef.text(x0 + floor(10 * s), y0 + floor(112 * s), string.format('HULL %d / %d', floor(I.hull + 0.5), floor(I.most + 0.5)),
+    max(8, floor(14 * s)), col(230, 232, 235, a), L + 2)
+  -- the parts, laid out as you sit in it (your left is its left): cockpit front L / R, the rear strip on top, hips, legs
+  local PL = { { 82, 74, 32, 28 }, { 116, 74, 32, 28 }, { 82, 104, 66, 6 }, { 86, 50, 58, 20 }, { 120, 10, 24, 36 }, { 86, 10, 24, 36 } }
+  for i, r in ipairs(PL) do
+    local c = I.dead[i] and { 90, 20, 18 } or HUD.STEP[I.part[i]] or HUD.STEP[3]
+    if I.dead[i] then box(r[1] - 1, r[2] - 1, r[3] + 2, r[4] + 2, col(220, 50, 40, a)) end
+    box(r[1], r[2], r[3], r[4], col(c[1], c[2], c[3], a), L + 2)
+  end
+  -- the arms: left and right of the body, their rounds below
+  for i = 1, 2 do
+    local arm = I.arm[i]
+    local ax = i == 1 and 22 or 162
+    local c = arm.dead and { 90, 20, 18 } or HUD.STEP[3]
+    box(ax, 40, 46, 56, col(c[1], c[2], c[3], a), L + 2)
+    local txt = arm.dead and 'X' or arm.ammo or ''
+    chef.text(x0 + floor((ax + 2) * s), y0 + floor(24 * s), txt, max(8, floor(13 * s)), col(230, 232, 235, a), L + 3)
+    chef.text(x0 + floor((ax + 2) * s), y0 + floor(10 * s), arm.name or '', max(7, floor(10 * s)), col(170, 175, 180, a), L + 3)
+  end
+end
+-- everything drawn over the game each update: the Mech HUD
+function HUD.overlays(dt)
+  HUD.read()
+  HUD.draw()
 end
 
 local function draw_panel(dt)
@@ -3086,7 +3225,7 @@ local function panel_keys(dt)
         else
           local pre = ''
           if combos then
-            for _, m in ipairs(COMBO_MODS) do
+            for _, m in ipairs(P.COMBO) do
               if chef.key_down('left ' .. m) or chef.key_down('right ' .. m) then pre = pre .. m .. '+' end
             end
           end
@@ -3096,7 +3235,7 @@ local function panel_keys(dt)
     end
     if P.capmod and not chef.key_down(P.capmod) then
       local other
-      for _, m in ipairs(CAPTURE_MOD_LIST) do if m ~= P.capmod and chef.key_down(m) then other = m end end
+      for _, m in ipairs(P.MODLIST) do if m ~= P.capmod and chef.key_down(m) then other = m end end
       if other then P.capmod = other   -- Ctrl let go while Alt is still held: Alt is the one now
       else chef.set(P.capture, P.capmod); P.capture, P.capmod = nil, nil end
     end
@@ -3280,13 +3419,13 @@ local function seat_layer_step(dt)
   if L then S.l14, S.l14_t = L[14], S.t
   elseif S.l14_t and S.t - S.l14_t > 1 then S.l14, S.l14_t = nil, nil end
   local l14 = type(S.l14) == 'number' and S.l14 or -1
-  S.tl14 = L14_TANK[l14]
-  local g = L14_GATOR[l14] or false
+  S.tl14 = L14.TANK[l14]
+  local g = L14.GATOR[l14] or false
   if g ~= S.gator then
     S.gator = g
     log(g and ('Gator seat: ' .. (g == 'ggun' and 'gunner' or 'driver') .. ' (layer 14 = %d)') or 'out of the Gator', l14)
   end
-  pelican_step(L14_PELICAN[l14] and S.head ~= nil, l14, dt)
+  pelican_step(L14.PELICAN[l14] and S.head ~= nil, l14, dt)
 end
 
 local function step(dt)
@@ -3317,7 +3456,7 @@ local function step(dt)
     S.calm_t = 0
     S.down_any, S.getup, S.rising = false, false, false
     S.act, S.down, S.stance, S.hmax, S.fv = false, false, nil, nil, nil
-    S.mech, S.frv, S.empl, S.tank, S.tpass = false, false, false, false, false
+    S.mech, S.mech_it, S.frv, S.empl, S.tank, S.tpass = false, false, false, false, false, false
     S.tcrew, S.gator, S.pel, S.pel_seat, S.pel_gone, S.pel_t, S.pel_mv, S.l14, S.l14_t = false, false, false, false, false, nil, nil, nil, nil
     S.dead, S.corpse, S.corpses, S.avs, S.av_gen, S.dgen, S.dcams = false, nil, nil, nil, nil, nil, nil
     S.corpse_h = nil
@@ -3415,6 +3554,7 @@ local function step(dt)
     S.tcrew = S.tank and (S.tank.seat == 'crew' and V.tgun_fp and 'tgun' or S.tank.seat == 'driver' and V.tdrv_fp and 'tdrv') or false
     local mech = inside(mech_watch, nil, S.mech)
     S.mech_pre = mech and mech_model(mech) or ''
+    S.mech_it = mech or false
     mech = mech and mech.unit or false
     if mech ~= S.mech then log(mech and 'in a mech' or 'out of the mech') end
     S.mech, S.empl = mech, at_emplacement()
@@ -3503,6 +3643,7 @@ local function step(dt)
   else S.fv = nil end
   hide_guns()
   place(w)
+  HUD.overlays(dt)
   if P.open then draw_panel(dt) end
   draw_msg(dt)
 end
@@ -3533,8 +3674,7 @@ end
 -- game, and the mod waits 1, 2, 4 ... up to 30 s before it starts again as in a new world. Two minutes with no error
 -- forgive the count; 8 with no such two minutes between them and it stops for the session (the camera already the
 -- game's) and says so on screen.
-local REC = { n = 0, wait = 0, clean = 0, stopped = false, seen = {}, live = false }
-local REC_STOP, REC_FORGIVE, REC_MAX_WAIT = 8, 120, 30
+local REC = { n = 0, wait = 0, clean = 0, stopped = false, seen = {}, live = false, STOP = 8, FORGIVE = 120, MAX_WAIT = 30 }
 local function traced(e)
   local tb = debug and debug.traceback
   return tb and tb(tostring(e), 2) or tostring(e)
@@ -3568,13 +3708,13 @@ local function recover(hook, err)
   end
   S.world = nil
   if S.keep == nil then S.keep, S.keep_w = was, chef.world_id() end
-  if REC.n >= REC_STOP then
+  if REC.n >= REC.STOP then
     REC.stopped = true
     log('stopped for this session after %d errors close together: the camera is the game\'s. Please send this log.',
       REC.n)
     S.msg, S.msg_t = 'SHODAN FIRST PERSON STOPPED AFTER ERRORS (SEE THE LOG)', 8
   else
-    REC.wait = min(REC_MAX_WAIT, 2 ^ (REC.n - 1))
+    REC.wait = min(REC.MAX_WAIT, 2 ^ (REC.n - 1))
     log('back in %g s', REC.wait)
   end
 end
@@ -3590,7 +3730,7 @@ function M.update(dt)
   if not ok then return recover('update', err) end
   REC.live = true
   REC.clean = REC.clean + dt
-  if REC.n > 0 and REC.clean >= REC_FORGIVE then REC.n = 0 end
+  if REC.n > 0 and REC.clean >= REC.FORGIVE then REC.n = 0 end
 end
 -- (only after this frame's update ran clean: the frame a pause ends, the state is still the one from before the
 -- error until the update starts the world again, and placing the camera from it wrote a stale field of view)
