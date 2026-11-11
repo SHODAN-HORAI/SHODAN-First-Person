@@ -1765,7 +1765,8 @@ local function stance(dt, ox, oy, oz, rx, ry)
   local rise = min(1, max(0, (0.8 - r) / 0.25))
   -- lying: the lift fades out as you look down (none past ~45 deg down), so looking down at your back never shows the neck
   local dk = S.stance == 'prone' and c and min(1, max(0, 1 - (-c.fz - 0.3) / 0.4)) or 1
-  local wf, wu = (st[1] == 0 and 0 or V[st[1]]) + (S.diving and S.diving ~= 'dive_hide_back' and V.dive_fwd * (1 - back) or 0), (st[2] == 0 and 0 or V[st[2]] * dk) + V.back_lift * back * dk + (S.getup and V.getup_cam and V.getup_lift * min(1, max(0, (0.8 - r) / 0.25)) or 0)
+  local na = 1 - (S.sideaim or 0)
+  local wf, wu = (st[1] == 0 and 0 or V[st[1]]) + (S.diving and S.diving ~= 'dive_hide_back' and V.dive_fwd * (1 - back) * na * (S.rising and 0 or 1) or 0), (st[2] == 0 and 0 or V[st[2]] * dk) + V.back_lift * back * dk * na + (S.getup and V.getup_cam and not S.cup and V.getup_lift * rise or 0)
   local ws = st[3] == 0 and 0 or V[st[3]]
   -- backward dive in the air (until S.oblie = lying still on your back)
   if S.diving == 'dive_hide_back' and not S.getup and not S.oblie then wf = wf + V.bdive_fwd end
@@ -1849,6 +1850,14 @@ local function target(dt)
   local bu = (S.diving or S.stance == 'prone' or not S.bsign) and belly_up(h)
   local ob = (S.diving or S.stance == 'prone') and bu and (S.onback and bu > 0.3 or bu > 0.5) or false
   if ob ~= (S.onback or false) then S.onback = ob; log('on your back %s (belly up %.2f)', ob and 'start' or 'end', bu or -9) end
+  -- aiming while lying on your side or back: the head is at the sights, so the dive's forward push (still on after
+  -- a side dive), the look-back lift and the on-your-back limits fade out with the aim (they put the view inside
+  -- the gun aiming sideways after a side dive, screenshots 2026-11-11, belly up 0.50)
+  S.sideaim = S.stance == 'prone' and LIE_ANIM[S.an or 0] and not S.getup and bu and bu > -0.4 and (S.aimw or 0) or 0
+  if S.sideaim > 0.5 and not S.salog then
+    S.salog = true
+    log('aiming lying on your side/back (belly up %.2f): head %.2f m over the hips, %.2f m from them; dive push %.2f m and lifts dropped', bu, oz, sqrt(ox * ox + oy * oy), S.diving and S.diving ~= 'dive_hide_back' and V.dive_fwd or 0)
+  elseif S.sideaim == 0 then S.salog = nil end
   stance(dt, ox, oy, oz, rx, ry)
   -- getting up: the head swings 0.3-0.6 m BEHIND the hips along the view (log 2026-11-06), so the view would look
   -- through your own back. Keep it at least getup_ahead in front of the root along the view; S.gk eases the clamp in
@@ -1860,18 +1869,21 @@ local function target(dt)
   -- on your back the head sits in the collar (black looking down); aiming fixes it by moving the head 0.24 m toward the
   -- hips and 0.17 m up (log 2026-11-07), so hold the view at that pose: limits, never extra lifts (stacked = too high)
   -- only once landed (lying idle 48): in the air it pulled the view 0.3 m toward the legs (2026-11-07)
-  local onb = (S.onback or S.diving == 'dive_hide_back') and S.an == 48 and not S.getup and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel)
+  -- turning or crawling while down (41, 50) keeps it: dropping it there flicked the look limit and the backward-dive
+  -- push on and off as you looked around (log 2026-11-11)
+  local onb = (S.onback or S.diving == 'dive_hide_back') and (S.an == 48 or S.oblie and LIE_ANIM[S.an]) and not S.getup and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel)
   S.oblie = onb
   -- the belly shows for the whole time on your back, the dive's air part too (0.3.57 only showed it once landed)
   local bl = (S.onback or S.diving == 'dive_hide_back') and not S.getup and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) or false
   if bl ~= (S.belly or false) then S.belly = bl; apply_hiding() end
   S.obk = (S.obk or 0) + ((onb and 1 or 0) - (S.obk or 0)) * (1 - exp(-dt * 10))
-  if S.obk > 0.005 then
+  local obk = S.obk * (1 - S.sideaim)
+  if obk > 0.005 then
     local hl = sqrt(ox * ox + oy * oy)
     if V.onback_reach > 0 and hl > V.onback_reach then
-      local k = 1 - S.obk * (1 - V.onback_reach / hl); ox, oy = ox * k, oy * k
+      local k = 1 - obk * (1 - V.onback_reach / hl); ox, oy = ox * k, oy * k
     end
-    if V.onback_height > 0 and oz < V.onback_height then oz = oz + S.obk * (V.onback_height - oz) end
+    if V.onback_height > 0 and oz < V.onback_height then oz = oz + obk * (V.onback_height - oz) end
   end
   -- S.gw = how much the clamp holds (1 while getting up, then eased out over ~0.3 s): a blend, so letting go never
   -- snaps (a max() with a shrinking distance jumped 0.5 m in one frame, 2026-11-07). S.ga = the clamp's reach now
