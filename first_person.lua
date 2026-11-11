@@ -93,8 +93,12 @@ local TABS = {
       hint = 'The smoothed view never trails your head by more than this, so quick moves (crouching, a jolt in a seat) stay crisp.' },
     { id = 'bob_boost', label = 'Bigger head bob', min = 0, max = 100, step = 10, def = 0, unit = ' %', zero = 'OFF',
       hint = 'Makes the head bob bigger than the real one, on foot: 100 % is twice the real bob. Works on top of the smoothing (turn that off for the full effect).' },
-    { id = 'back_shift', label = 'Walking backward: view forward', toggle = true, def = false,
+    { id = 'back_shift', label = 'Walking backward: view forward', toggle = true, def = true,
       hint = 'Walking backward without aiming turns your Helldiver around to face you: the view slides forward so you do not look into your own back and shoulders. Never while aiming or prone.' },
+    { id = 'back_fwd', label = 'Walking backward: forward', min = -0.3, max = 0.51, step = 0.01, def = 0.51, unit = ' m', top = 'SAME',
+      hint = 'With Walking backward: view forward on: Forward while the view is slid forward. SAME (all the way right) = the normal Forward.' },
+    { id = 'back_up', label = 'Walking backward: height', min = -0.3, max = 0.31, step = 0.01, def = 0.31, unit = ' m', top = 'SAME',
+      hint = 'With Walking backward: view forward on: Height while the view is slid forward. SAME (all the way right) = the normal Height.' },
     { id = 'swing_hold', label = 'Hold through camera swings', toggle = true, def = false,
       hint = 'A sudden swing of the game camera (more than 60 deg in one frame: a crash, a ragdoll, a blast) is not followed for up to 0.4 s, so the view does not spin around. On foot only.' },
     { head = 'SWITCHING' },
@@ -288,6 +292,12 @@ local TABS = {
       hint = 'Switches to the game\'s camera in this FRV. Off = first person with the offsets below.' },
     { id = 'frv_fov', label = 'Field of view in this FRV', min = 0, max = 120, step = 1, def = 0, unit = ' deg', zero = 'SAME',
       hint = 'Up-down view angle in this FRV, first or third person. SAME = the normal field of view (in third person the game default).' },
+    { id = 'frv_back', label = 'Looking back: view forward', toggle = true, def = true,
+      hint = 'Every seat of this FRV: looking back past your shoulder slides the view the way you look, so you do not look into your own back and shoulders. Not while aiming.' },
+    { id = 'frv_back_fwd', label = 'Looking back: forward', min = 0, max = 0.5, step = 0.01, def = 0.15, unit = ' m',
+      hint = 'How far the view slides the way you look when you look back in this FRV. Too far and it goes into the seat.' },
+    { id = 'frv_back_up', label = 'Looking back: height', min = -0.3, max = 0.3, step = 0.01, def = 0, unit = ' m',
+      hint = 'Extra height while you look back in this FRV.' },
     { head = 'DRIVER' },
     { id = 'frv_tpd', label = 'Third person when driving', toggle = true, def = false,
       hint = 'The game camera in the driver seat only. Third person in this FRV on = every seat.' },
@@ -1828,6 +1838,9 @@ local function warp_check(dx, dy, dz)
 end
 
 -- the view position for this frame: head (its offset from the root smoothed), then the offsets along the view
+-- a row at its top slot (SAME): values are snapped to steps, so compare within half a step
+local function at_top(id) local r = ROW[id]; return V[id] > r.max - r.step / 2 end
+local function ease_to(cur, want, st) return want > cur and min(want, cur + st) or max(want, cur - st) end
 local function target(dt)
   local h = S.head
   local hx, hy, hz = upos(h.u, h.node)
@@ -2024,30 +2037,56 @@ local function target(dt)
   local cl = 0
   -- Walking backward: the body turned to face the camera (facing below -0.15 along the look) and moving back toward
   -- it faster than 1.8 m/s slides the view forward, past the head; ends once the body faces 0.45 along the look again.
-  -- Never aiming or prone (a backward dive is fast backward movement too: lying there it showed only your legs)
-  local bk_on = false
-  if V.back_shift and foot and S.stance ~= 'prone' and not S.aim and S.act then
+  -- Never aiming or prone (a backward dive is fast backward movement too: lying there it showed only your legs).
+  -- In an FRV seat (its own rows, per model): looking back past your shoulder (facing below -0.15, off above 0.1)
+  local bk_on, bkfacing = false, nil
+  local fp = S.frv and (S.frv_pre or '')
+  if (S.frv and V[fp .. 'frv_back'] or V.back_shift and foot and S.stance ~= 'prone') and not S.aim and S.act then
     local bfx, bfy = chef.unit_rotation(S.head.u)
     if finite(bfx) and finite(bfy) then
       local hx_, hy_ = fx / hl, fy / hl
       local facing = bfx * hx_ + bfy * hy_
+      bkfacing = facing
+      if S.frv then
+        bk_on = facing < (S.bkon and 0.1 or -0.15)
+        if S.bkseat ~= S.frv and S.frv_u then  -- once per seat: does the body's facing follow the car?
+          local cx, cy = chef.unit_rotation(S.frv_u)
+          if finite(cx) and finite(cy) then S.bkseat = S.frv; log('FRV look back: %s seat, body vs car facing %.2f', S.frv, bfx * cx + bfy * cy) end
+        end
+      else
       local m, sp = S.bkm, nil
       if m and S.t - m.t > 0.02 and S.t - m.t < 0.3 then sp = ((rx - m.x) * hx_ + (ry - m.y) * hy_) / (S.t - m.t) end
       if not m then m = {}; S.bkm = m end
       if not m.t or S.t - m.t > 0.02 then m.x, m.y, m.t = rx, ry, S.t end
       if not S.bkon then bk_on = facing < -0.15 and sp ~= nil and sp < -1.8
       else bk_on = facing <= 0.45 end
+      end
     end
   end
-  if bk_on ~= (S.bkon or false) then log('walking backward: %s', bk_on and 'view forward' or 'off') end
+  if not S.frv then S.bkseat = nil end
+  if bk_on ~= (S.bkon or false) then
+    log('%s: %s (facing %.2f, head ahead of the root %.2f m)', S.frv and 'FRV look back' or 'walking backward', bk_on and 'view forward' or 'off',
+      bkfacing or 0, S.sm[1] * fx / hl + S.sm[2] * fy / hl)
+  end
   S.bkon = bk_on
   do
     local along = S.sm[1] * fx / hl + S.sm[2] * fy / hl
-    local want_b = bk_on and min(0.54, max(0, 0.39 - along)) or 0
     local st = 4 * dt
-    local cur = S.bk or 0
-    S.bk = want_b > cur and min(want_b, cur + st) or max(want_b, cur - st)
+    if S.frv then
+      -- an FRV slides its own fixed distance (the on-foot 0.39 m from the root put the passenger into the seat) and
+      -- glides there over 0.4 s, eased at both ends (4 m/s was a snap, user 2026-11-11). Its Height adds
+      S.bkw = max(0, min(1, (S.bkw or 0) + (bk_on and dt or -dt) / 0.4))
+      local e = S.bkw * S.bkw * (3 - 2 * S.bkw)
+      S.bk, S.bkf, S.bkh = e * (V[fp .. 'frv_back_fwd'] or 0), 0, e * (V[fp .. 'frv_back_up'] or 0)
+    else
+      S.bkw = 0
+      S.bk = ease_to(S.bk or 0, bk_on and min(0.54, max(0, 0.39 - along)) or 0, st)
+      -- its own Forward and Height replace the normal ones while slid (SAME keeps them), eased like the slide
+      S.bkf = ease_to(S.bkf or 0, bk_on and not at_top('back_fwd') and V.back_fwd - V.fwd or 0, st)
+      S.bkh = ease_to(S.bkh or 0, bk_on and not at_top('back_up') and V.back_up - V.up or 0, st)
+    end
     cl = cl + S.bk / hl
+    f, up = f + S.bkf, up + S.bkh
   end
   -- the ground under you, for the crosshair fix looking down: your feet while they're steady, held through a jump or
   -- a fall (the ground you left isn't the ground below you) until 0.3 s after they settle
@@ -3279,6 +3318,7 @@ local function value_text(r)
   local v = V[r.id]
   if r.toggle then return v and 'ON' or 'OFF' end
   if v == 0 and r.zero then return r.zero end
+  if r.top and v > r.max - r.step / 2 then return r.top end
   if PICKS[r.id] then local m = PICKS[r.id].models; return (m[v] or m[1]).name end
   if r.names then return r.names[v] or tostring(v) end
   local d = r.step < 1 and 2 or 0
