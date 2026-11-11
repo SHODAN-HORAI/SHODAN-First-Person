@@ -131,6 +131,13 @@ local TABS = {
       hint = 'With Correct for enemies on: how much of the extra turn toward a close enemy is made. 10 = exact, lower = gentler.' },
     { id = 'hip_ease', label = 'Enemy time', min = 0, max = 2, step = 0.05, def = 0.4, unit = ' s',
       hint = 'With Correct for enemies on: how long the view takes to adjust when an enemy comes under the crosshair or leaves it.' },
+    { head = 'ENEMIES' },
+    { id = 'aim_near', label = 'Nearest enemy distance', min = 2, max = 20, step = 1, def = 2, unit = ' m',
+      hint = 'With Correct for enemies on: a closer enemy counts as this far away, so it never swings the view hard.' },
+    { id = 'aim_cone', label = 'Near-miss angle', min = 0, max = 6, step = 0.5, def = 3, unit = ' deg', zero = 'OFF',
+      hint = 'With Correct for enemies on: an enemy this close to the crosshair counts even when the line misses it (small or far targets).' },
+    { id = 'aim_corpse', label = 'Skip dead enemies', toggle = true, def = true,
+      hint = 'With Correct for enemies on: bodies on the ground never count as the enemy under the crosshair.' },
   } },
   { name = 'STANCE', rows = {
     { head = 'CROUCHED' },
@@ -1690,16 +1697,47 @@ for kd in (
   'f1610ac48cdc5240 f196069e7e14c497 f22d027b37bef107 f540ca9d9d4a422e f66d0bad8693779a f79cd8bb654397df ' .. 
   'f8131632aa867107 f8b5a81a86d5d4eb f96257fcae258caa fb9937035d652c43 fc8dec78be8ab47d fd5247653c897803 ' .. 
   'feb484ee972469f7 ff5cc825b9571052 '):gmatch('%x+') do ENEMY_KINDS[kd] = true end
+-- more kinds from the game's generated_entities: enemies the list above lacks, plus fabricators, bunkers, emplacements, the jammer and
+-- scrambler, spore spewers and lungs, shrieker nests, eggs, bug holes and the illegal broadcast's parts
+for kd in (
+  '06d3c4720e642fc1 0883366204e1ccc5 095686275a113614 1448d494665d01a0 1baeef36a88ae579 298c464f7f4261e3 ' ..
+  '2c1a7790c435fd67 3478839c3c9b6646 480445a33039ce5e 485c04e03ccc969e 57db57121f3e7ed2 5b968cd78f8bc7a0 ' ..
+  '6293d7ab6e681855 6e499c5c95b019fc 7d96c57604e61c3a 87dad37dd7c888da 9f44121c554dae89 a2a86454f67fbc47 ' ..
+  'a57ae2a703c02899 a83587cbff25c79e a98f8b559c7993d8 aa28caf964d05500 b29af893b9c188a9 b8fe3a0fe1a58465 ' ..
+  'c28b3482e73d1ea9 cdb573e646581547 cecd6979cf7bb0f2 d7abb6b791e48e16 d7e2c78b1ef4a8e1 dd2dac48bc52d2be ' ..
+  'e405918464bcdb07'):gmatch('%x+') do ENEMY_KINDS[kd] = true end
 local enemy_watch = chef.watch and chef.watch(ENEMY_KINDS, 1) or nil
+
+-- kinds that are characters. A dead character has no animation state machine; a structure
+-- never has one. So a unit counts as dead once it lost the state machine it had, or, for one first seen already
+-- dead, when it's a character kind without one.
+local CHAR_KINDS = {}
+for kd in (
+  'a381a11c07d3eb94 cc7022fdd172089b ccae5264acd591b7 3aff5fd7d5450b99 0ab7b92b131c228c 64ba5f030b114ec1 ' ..
+  '9f57782f00e6ed20 e2e62fdd39407fe3 0adc9f9173ad8e1d 44458a2c52b002fb 746a7f3beda32699 9f44121c554dae89 ' ..
+  '33b3e0ce8d179eec c28b3482e73d1ea9 d7e2c78b1ef4a8e1 b940c889d77f8219 db964631be1cf501 72a83e49ced6db3d ' ..
+  '5b968cd78f8bc7a0 ef04cb84d097a497 f79cd8bb654397df a35207c6f2150806 1baeef36a88ae579 a1f37bf2a40fbde4 ' ..
+  'be39e313a1e46bb9'):gmatch('%x+') do CHAR_KINDS[kd] = true end
+local function corpse(it)
+  local has = call('Unit.has_animation_state_machine', it.unit)
+  if has == nil then return false end  -- the call failed: no verdict
+  local seen = S.asm
+  if not seen then seen = {}; S.asm = seen end
+  if has == true then seen[it.unit] = true; return false end
+  return seen[it.unit] == true or CHAR_KINDS[it.kind] == true
+end
 
 -- the game shoots along its own camera line (over your shoulder). While aiming, the view turns a little toward the
 -- point that line reaches at the target distance, so the crosshair and the shots meet there: the distance of the
 -- enemy under the crosshair (box test along the game's line), else aim_dist. Only the mouse moves that line, so no
 -- jitter (0.3.66/67 used the gun: it sways 2-11 deg off the aim).
+-- A box the line goes through wins; else the enemy nearest the line within aim_cone deg (small or far targets the
+-- line just misses). Dead bodies are skipped (aim_corpse), and nothing counts as nearer than aim_near.
 local function aim_range(G, dx, dy, dz)
   if not (enemy_watch and chef.ray_box) then return nil, 'no enemy list' end
   local from, dir = { x = G[1], y = G[2], z = G[3] }, { x = dx, y = dy, z = dz }
-  local best, bu
+  local cone = math.rad(V.aim_cone)
+  local best, bu, ca, cd, cu
   for _, it in ipairs(enemy_watch.items) do
     local x, y, z = upos(it.unit)
     if x then
@@ -1708,14 +1746,17 @@ local function aim_range(G, dx, dy, dz)
       if along > 2 and along < 200 then
         local side = sqrt(max(0, vx * vx + vy * vy + vz * vz - along * along))
         -- only enemies within 6 deg (or 3 m) of the line get the box test
-        if side < max(3, along * 0.105) then
+        if side < max(3, along * 0.105) and not (V.aim_corpse and corpse(it)) then
           local hit = chef.ray_box(from, dir, it.unit)
           if type(hit) == 'number' and hit > 2 and (not best or hit < best) then best, bu = hit, it.unit end
+          local a = math.atan2(side, along)
+          if a < cone and (not ca or a < ca) then ca, cd, cu = a, along, it.unit end
         end
       end
     end
   end
-  if best then return best, 'enemy', bu end
+  if best then return max(best, V.aim_near), 'enemy', bu end
+  if cd then return max(cd, V.aim_near), 'near miss', cu end
   return nil, 'no enemy'
 end
 
@@ -2619,7 +2660,7 @@ function M.update(dt)
     S.world, S.cams, S.head, S.hidden, S.parts, S.on, S.tx = chef.world_id(), {}, nil, {}, {}, false, nil
     S.ghid, S.gst, S.gsaid = {}, {}, {}
     S.last_scan, S.rescans, S.cam_gen = nil, {}, nil
-    S.hr, S.gfov, S.ghip = nil, nil, nil
+    S.hr, S.gfov, S.ghip, S.asm = nil, nil, nil, {}
     S.ad, S.aw, S.podu, S.puse, S.pod = nil, nil, nil, false, false
     S.away, S.away_t, S.spod, S.slow_t, S.sup_t, S.shmax, S.nopod, S.mdrop, S.pfall_t = false, 0, false, 0, 0, nil, false, nil, 0
     S.calm_t = 0
