@@ -91,6 +91,12 @@ local TABS = {
       hint = 'Takes the side-to-side sway out. Keep it low so turning still feels quick.' },
     { id = 'smooth_max', label = 'Smoothing lag limit', min = 0, max = 0.3, step = 0.01, def = 0.12, unit = ' m', zero = 'OFF',
       hint = 'The smoothed view never trails your head by more than this, so quick moves (crouching, a jolt in a seat) stay crisp.' },
+    { id = 'bob_boost', label = 'Bigger head bob', min = 0, max = 100, step = 10, def = 0, unit = ' %', zero = 'OFF',
+      hint = 'Makes the head bob bigger than the real one, on foot: 100 % is twice the real bob. Works on top of the smoothing (turn that off for the full effect).' },
+    { id = 'back_shift', label = 'Walking backward: view forward', toggle = true, def = false,
+      hint = 'Walking backward without aiming turns your Helldiver around to face you: the view slides forward so you do not look into your own back and shoulders. Never while aiming or prone.' },
+    { id = 'swing_hold', label = 'Hold through camera swings', toggle = true, def = false,
+      hint = 'A sudden swing of the game camera (more than 60 deg in one frame: a crash, a ragdoll, a blast) is not followed for up to 0.4 s, so the view does not spin around. On foot only.' },
     { head = 'SWITCHING' },
     { id = 'blend', label = 'Glide time', min = 0, max = 1, step = 0.05, def = 0.25, unit = ' s', zero = 'OFF',
       hint = 'How long the view glides between first person and the game camera (peek, seats, terminals, the toggle key). Death, the hellpod and cutscenes always cut.' },
@@ -106,6 +112,10 @@ local TABS = {
       hint = 'With Third person in the hellpod on: the game camera for the fall only, first person inside the pod 0.5 s after it lands (the body is still left alone: no animation questions until you step out).' },
     { id = 'tp_term', label = 'Third person at terminals', toggle = true, def = true,
       hint = 'Switches to the game camera while you use a mission terminal, and back when you step off it.' },
+    { id = 'term_fov', label = 'Terminal field of view change', min = -40, max = 40, step = 1, def = 0, unit = ' deg', zero = 'SAME',
+      hint = 'With Third person at terminals off: degrees added to the field of view while you use a terminal in first person (minus zooms in on its screen).' },
+    { id = 'term_face', label = 'Face the terminal', toggle = true, def = true,
+      hint = 'With Third person at terminals off: when the game turns its camera away from the terminal you use (the extraction terminal), the view turns to face where your Helldiver faces, and back when you step off.' },
     { head = '(Experimental, report issues!)', note = true },
     { id = 'tp_menus', label = 'Third person for map and stratagems', toggle = true, def = false,
       hint = 'Switches to the game camera while the map or stratagem list is out.' },
@@ -138,6 +148,8 @@ local TABS = {
       hint = 'The view turns a little so the crosshair sits where your shots land. Everything on this tab needs it on.' },
     { id = 'aim_dist', label = 'Distance with no enemy', min = 5, max = 100, step = 1, def = 30, unit = ' m',
       hint = 'Where the crosshair is exact while no enemy is under it. Nearer or further, shots land a little off.' },
+    { id = 'run_dist', label = 'Distance while running', min = 0, max = 100, step = 1, def = 0, unit = ' m', zero = 'SAME',
+      hint = 'Running or sprinting (not aiming) the gun is carried low and cannot be lined up: the crosshair is exact at this distance instead. An enemy under it still wins. Read from the game: needs the running state.' },
     { id = 'aim_ease', label = 'Correction time', min = 0, max = 2, step = 0.05, def = 0.15, unit = ' s',
       hint = 'How long the view takes to adjust when you aim or the target distance changes. Longer feels less like aim assist.' },
     { id = 'aim_max', label = 'Largest turn', min = 2, max = 20, step = 1, def = 8, unit = ' deg',
@@ -1859,6 +1871,19 @@ local function target(dt)
     if el > lim then local k = lim / el; S.sm[1], S.sm[2] = ox + ex * k, oy + ey * k end
     if ez > lim then S.sm[3] = oz + lim elseif ez < -lim then S.sm[3] = oz - lim end
   end
+  -- Bigger head bob: the head's movement around its slow average (0.4 s) made bigger, on foot only
+  local bbx, bby, bbz = 0, 0, 0
+  local bfoot = not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel or S.diving or S.getup or S.down or S.eyes)
+  if V.bob_boost > 0 and bfoot then
+    local bo = S.bob
+    if not bo then bo = { ox, oy, oz }; S.bob = bo
+    else
+      local g = 1 - exp(-dt / 0.4)
+      bo[1], bo[2], bo[3] = bo[1] + (ox - bo[1]) * g, bo[2] + (oy - bo[2]) * g, bo[3] + (oz - bo[3]) * g
+    end
+    local kb = V.bob_boost / 100
+    bbx, bby, bbz = (ox - bo[1]) * kb, (oy - bo[2]) * kb, (oz - bo[3]) * kb
+  else S.bob = nil end
   local c = chef.camera()
   local fx, fy, fz = 0, 1, 0
   -- a look that isn't a number this frame: placed as if looking straight ahead, so first person holds
@@ -1908,6 +1933,34 @@ local function target(dt)
     f, up, sd = f + e * V.shield_fwd, up + e * V.shield_up, sd + e * V.shield_side
   end
   local foot = not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel or S.diving or S.onback or S.getup or S.down)
+  local cl = 0
+  -- Walking backward: the body turned to face the camera (facing below -0.15 along the look) and moving back toward
+  -- it faster than 1.8 m/s slides the view forward, past the head; ends once the body faces 0.45 along the look again.
+  -- Never aiming or prone (a backward dive is fast backward movement too: lying there it showed only your legs)
+  local bk_on = false
+  if V.back_shift and foot and S.stance ~= 'prone' and not S.aim and S.act then
+    local bfx, bfy = chef.unit_rotation(S.head.u)
+    if finite(bfx) and finite(bfy) then
+      local hx_, hy_ = fx / hl, fy / hl
+      local facing = bfx * hx_ + bfy * hy_
+      local m, sp = S.bkm, nil
+      if m and S.t - m.t > 0.02 and S.t - m.t < 0.3 then sp = ((rx - m.x) * hx_ + (ry - m.y) * hy_) / (S.t - m.t) end
+      if not m then m = {}; S.bkm = m end
+      if not m.t or S.t - m.t > 0.02 then m.x, m.y, m.t = rx, ry, S.t end
+      if not S.bkon then bk_on = facing < -0.15 and sp ~= nil and sp < -1.8
+      else bk_on = facing <= 0.45 end
+    end
+  end
+  if bk_on ~= (S.bkon or false) then log('walking backward: %s', bk_on and 'view forward' or 'off') end
+  S.bkon = bk_on
+  do
+    local along = S.sm[1] * fx / hl + S.sm[2] * fy / hl
+    local want_b = bk_on and min(0.54, max(0, 0.39 - along)) or 0
+    local st = 4 * dt
+    local cur = S.bk or 0
+    S.bk = want_b > cur and min(want_b, cur + st) or max(want_b, cur - st)
+    cl = cl + S.bk / hl
+  end
   -- the ground under you, for the crosshair fix looking down: your feet while they're steady, held through a jump or
   -- a fall (the ground you left isn't the ground below you) until 0.3 s after they settle
   local vz = (S.fzp and dt > 0) and (rz - S.fzp) / dt or 0
@@ -1918,9 +1971,9 @@ local function target(dt)
   -- or down into the chest; on foot, looking down pushes it forward instead
   local ux, uy = fx / hl, fy / hl
   if not seat then f = f + max(0, -fz) * V.look_down end
-  S.tx = rx + S.sm[1] + ux * f + uy * sd + vx * vf + vy * vs
-  S.ty = ry + S.sm[2] + uy * f - ux * sd + vy * vf - vx * vs
-  S.tz = rz + S.sm[3] + up
+  S.tx = rx + S.sm[1] + bbx + ux * f + uy * sd + vx * vf + vy * vs + fx * cl
+  S.ty = ry + S.sm[2] + bby + uy * f - ux * sd + vy * vf - vx * vs + fy * cl
+  S.tz = rz + S.sm[3] + bbz + up
   S.trx, S.try, S.trz = rx, ry, rz  -- the root this view was built from (the draw pass moves it along)
 end
 
@@ -2072,6 +2125,7 @@ end
 
 -- the fixed distance: its own on the FRV gun and on emplacements when set, else aim_dist
 local function fixed_dist()
+  if S.runaim then return V.run_dist end
   return S.frv == 'gunner' and V.gun_dist > 0 and V.gun_dist or S.empl and V.empl_dist > 0 and V.empl_dist or V.aim_dist
 end
 -- where the game's line (looking down, dz < 0) meets the flat ground at your feet, if that comes before D m
@@ -2281,6 +2335,59 @@ local function view_limit(k, cam, dt)
   local _, why = call('Camera.set_local_rotation', cam, k.u, nq)
   if why then once('yq' .. tostring(why), 'running look limit: rotation write refused: %s', tostring(why)); return end
   k.yq = true; wrote(k, nq)
+end
+
+-- Face the terminal and Hold through camera swings: both turn the view only, like the limits above. The terminal: when
+-- the game's view is turned away from the way your Helldiver faces (the extraction terminal), it eases to face the
+-- body (4 per second). The swing: a game look more than 60 deg off the last frame's is not followed for up to 0.4 s
+-- (until the game's look comes back within 45 deg of the held one); never in a seat or a vehicle
+local function turn_hold(k, cam, dt)
+  local base, mine = game_rot(k, cam)
+  if not base then return end
+  local fx, fy, fz = xyz(call('Quaternion.forward', base))
+  if not (finite(fx) and finite(fy) and finite(fz)) then return end
+  local seat = S.frv or S.mech or S.empl or S.tank or S.gator or S.pel
+  local held = nil
+  if V.swing_hold and not seat then
+    local hf, pf = k.hf, k.pf
+    if hf and S.t < k.hu then
+      if hf[1] * fx + hf[2] * fy + hf[3] * fz < 0.7 then held = hf else k.hf = nil end
+    else
+      k.hf = nil
+      if pf and S.t - pf[4] < 0.1 and pf[1] * fx + pf[2] * fy + pf[3] * fz < 0.5 then
+        k.hf, k.hu = { pf[1], pf[2], pf[3] }, S.t + 0.4
+        held = k.hf
+        log('the game camera swung suddenly: holding the view for 0.4 s')
+      end
+    end
+    pf = pf or {}
+    pf[1], pf[2], pf[3], pf[4] = fx, fy, fz, S.t
+    k.pf = pf
+  else k.hf, k.pf = nil, nil end
+  if held then fx, fy, fz = held[1], held[2], held[3] end
+  local face = V.term_face and S.term and not V.tp_term and S.head
+  local hl = sqrt(fx * fx + fy * fy)
+  local bx, by
+  if face then bx, by = chef.unit_rotation(S.head.u) end
+  local bl = (finite(bx) and finite(by)) and sqrt(bx * bx + by * by) or 0
+  local want_t = face and bl > 0.5 and hl > 0.2 and (fx * bx + fy * by) / (hl * bl) < 0.9
+  k.tw = want_t and min(1, (k.tw or 0) + dt * 4) or max(0, (k.tw or 0) - dt * 4)
+  if k.tw > 0 and bl > 0.5 and hl > 0.2 then
+    local w = k.tw * k.tw * (3 - 2 * k.tw)
+    local nx, ny = fx / hl + (bx / bl - fx / hl) * w, fy / hl + (by / bl - fy / hl) * w
+    local nl = sqrt(nx * nx + ny * ny)
+    if nl > 1e-3 then fx, fy = nx / nl * hl, ny / nl * hl end
+  elseif not held then
+    if k.tq then
+      if mine then call('Camera.set_local_rotation', cam, k.u, base) end
+      k.tq, k.last = nil, nil
+    end
+    return
+  end
+  local nq = call('Quaternion.look', Vec(fx, fy, fz), Vec(0, 0, 1))
+  local _, why = call('Camera.set_local_rotation', cam, k.u, nq)
+  if why then once('tq' .. tostring(why), 'view turn: rotation write refused: %s', tostring(why)); return end
+  k.tq = true; wrote(k, nq)
 end
 
 local function restore(k, cam)
@@ -2515,7 +2622,8 @@ local function place(w)
           elseif k.main and state == 'ours' and not S.mech then
             pitch_limit(k, cam, S.dt or 0.016)
             if not k.qw then view_limit(k, cam, S.dt or 0.016) end
-            if not (k.qw or k.yq) then k.qlog = nil; aim_fix(k, cam, S.dt or 0.016) end
+            if not (k.qw or k.yq) then turn_hold(k, cam, S.dt or 0.016) end
+            if not (k.qw or k.yq or k.tq) then k.qlog = nil; aim_fix(k, cam, S.dt or 0.016) end
           end
           -- Cut the cockpit (MECHS tab): a mech's own near range clears its frame and arm housing from the view
           local nr = S.mech and V[S.mech_pre .. 'mech_clip'] > 0 and V[S.mech_pre .. 'mech_clip']
@@ -3600,7 +3708,7 @@ local function step(dt)
   -- (and while gliding out after switching off: else the glide heads for the spot the head was at the key press)
   if (S.on or S.bw > 0) and S.head and not ship_off then target(dt) end
   if S.on and V.tp_galaxy then galaxy_check(dt) else S.galaxy = false end   -- every frame: the head shows at once
-  if S.on and V.tp_term then term_check() else S.term = false end
+  if S.on and (V.tp_term or V.term_fov ~= 0 or V.term_face) then term_check() else S.term = false end
   if S.on and V.tp_pod then pod_check() else S.puse = false end
   menu_check()
   update_act()
@@ -3621,6 +3729,16 @@ local function step(dt)
       S.aim = l4 == 59 or l4 == 53 or (l4 == 0 and (l22 == 2 or l22 == 3)) or (rmb and not V.aim_toggle) or false
     end
   end
+  -- Distance while running: the legs' layer at 7 (running or sprinting) for 0.3 s, not aiming, on foot
+  local runl = false
+  if V.run_dist > 0 and not S.aim and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) then
+    local L = layers()
+    runl = L ~= nil and L[22] == 7
+  end
+  if runl then S.run0 = S.run0 or S.t else S.run0 = nil end
+  local ra = S.run0 ~= nil and S.t - S.run0 >= 0.3
+  if ra ~= (S.runaim or false) then log('aim: %s', ra and string.format('running, lined up at %d m', V.run_dist) or 'running ended') end
+  S.runaim = ra
   neck(w)
   -- in a mech the game narrows its view as the mech aims: first person keeps the widest seen in this mech
   if S.mech and S.act and S.gfov then S.mwide = max(S.mwide or S.gfov, S.gfov) elseif not S.mech then S.mwide, S.md, S.mg = nil, nil, nil end
@@ -3653,6 +3771,11 @@ local function step(dt)
     or (S.act and S.aim and (V.aim_zoom > 0 or (S.shield and V.shield_zoom > 0) or not V.aim_zoom_game) and S.ghip) or 0
   if mag ~= 1 and base > 0 then base = 2 * math.deg(math.atan(math.tan(math.rad(base) / 2) * mag)) end
   local want = (S.act or S.bw > 0) and (S.aim and V.aim_fov > 0 and V.aim_fov or base * extra) or vf
+  -- a terminal in first person: Terminal field of view change on top (from the game's own at GAME)
+  if S.act and S.term and V.term_fov ~= 0 and not V.tp_term then
+    local b0 = want > 0 and want or S.ghip or S.gfov
+    if b0 then want = max(10, min(150, b0 + V.term_fov)) end
+  end
   -- (nothing written yet at Field of view GAME: the zoom starts from the game's own, not in one jump)
   local from = S.fv or (S.act and V.fov == 0 and vf == 0 and S.gfov)
   if want > 0 then S.fv = from and from + (want - from) * (1 - exp(-dt * 14)) or want
