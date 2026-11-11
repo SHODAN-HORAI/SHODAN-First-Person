@@ -453,6 +453,9 @@ local S = { on = false, cams = {}, head = nil, look = 0, frv_t = 0, said = {}, p
 -- indices are kept (per kind, per unit), so a handle the engine hands out again for another unit must not get one
 -- that is out of range. Counted once a frame per unit; no count to be had = asked as before.
 local nodes_n, nodes_t = {}, nil
+local function finite(n) return type(n) == 'number' and n == n and n > -math.huge and n < math.huge end
+-- a position that isn't a number (NaN or infinite: a body mid-teardown, a bad frame) is never used: upos gives nil
+-- and marks the frame (S.badpos), so the head is kept and first person holds where it was this frame
 local function upos(u, i)
   if i and i ~= 1 then
     if nodes_t ~= S.t then nodes_n, nodes_t = {}, S.t end
@@ -463,7 +466,13 @@ local function upos(u, i)
       return nil
     end
   end
-  return chef.unit_position(u, i)
+  local x, y, z = chef.unit_position(u, i)
+  if x ~= nil and not (finite(x) and finite(y) and finite(z)) then
+    S.badpos = S.t
+    if not S.said.badpos then S.said.badpos = true; log('a position came back not a number: that frame is skipped') end
+    return nil
+  end
+  return x, y, z
 end
 -- a camera unit's camera, only while it still has that slot (the slot list is kept between camera list changes)
 local function cam_of(k)
@@ -514,7 +523,7 @@ local empl_watch = chef.watch and chef.watch(EMPL_KINDS, 2) or nil
 local function xyz(v)
   if v == nil then return nil end
   local x, y, z = call('Vector3.to_elements', v)
-  if type(x) == 'number' then return x, y, z end
+  if finite(x) and finite(y) and finite(z) then return x, y, z end
 end
 local function once(k, ...) if not S.said[k] then S.said[k] = true; log(...) end end
 
@@ -1157,7 +1166,7 @@ local function check_player(w)
       local x, y, z = upos(h.u, h.node)
       -- ship: kept while it's there (the cutscene camera framing a teammate's pod made the old check let go and
       -- take the teammate's Helldiver); S.away hands the view to the game instead
-      lost = not x or (chef.in_mission() and not ours and not S.galaxy and c and (x - c.x) ^ 2 + (y - c.y) ^ 2 + (z - c.z) ^ 2 > 36)
+      lost = (not x and S.badpos ~= S.t) or (x and chef.in_mission() and not ours and not S.galaxy and c and (x - c.x) ^ 2 + (y - c.y) ^ 2 + (z - c.z) ^ 2 > 36)
     end
     if lost then
       if S.dead or S.down_any then
@@ -1541,7 +1550,7 @@ local function target(dt)
   local h = S.head
   local hx, hy, hz = upos(h.u, h.node)
   local rx, ry, rz = upos(h.u, h.root)
-  if not (hx and rx) then S.head = nil; return end
+  if not (hx and rx) then if S.badpos ~= S.t then S.head = nil end; return end
   if S.prx and S.prz and S.wu == h.u then warp_check(rx - S.prx, ry - S.pry, rz - S.prz) end
   S.wu = h.u  -- a new body (reinforced) is no warp
   -- rising speed, eased over 0.05 s (a single-frame jump is a respawn or teleport)
@@ -1632,7 +1641,8 @@ local function target(dt)
   end
   local c = chef.camera()
   local fx, fy, fz = 0, 1, 0
-  if c then fx, fy, fz = c.fx, c.fy, c.fz end
+  -- a look that isn't a number this frame: placed as if looking straight ahead, so first person holds
+  if c and finite(c.fx) and finite(c.fy) and finite(c.fz) then fx, fy, fz = c.fx, c.fy, c.fz end
   local hl = sqrt(fx * fx + fy * fy); if hl < 1e-4 then hl = 1 end
   local seat = SEAT[S.frv or S.mech and 'mech' or S.empl and 'empl' or S.tpass or '']
   local pre = S.frv and S.frv_pre or S.mech and S.mech_pre or S.empl and S.empl_pre or ''
@@ -1668,7 +1678,7 @@ end
 -- game's (the mouse). Shared by the look limit and the crosshair fix, so neither takes the other's turn for the mouse.
 local function game_rot(k, cam)
   local a, b, c, d = call('Quaternion.to_elements', call('Camera.local_rotation', cam))
-  if type(a) ~= 'number' then once('qr', 'camera rotation: none (%s)', tostring(b)); return end
+  if not (finite(a) and finite(b) and finite(c) and finite(d)) then once('qr', 'camera rotation: none (%s)', tostring(b)); return end
   local l = k.last
   local mine = l and abs(a - l[1]) + abs(b - l[2]) + abs(c - l[3]) + abs(d - l[4]) < 1e-5
   if not mine or not k.qb then k.qb = { a, b, c, d } end
@@ -2031,7 +2041,10 @@ local function place(w)
   end
   if not (S.head and S.tx) then return end
   local hx, hy, hz = upos(S.head.u, S.head.node)
+  -- a frame whose position isn't a number: the last good head, so first person holds
+  if not hx and S.badpos == S.t and S.ph then hx, hy, hz = S.ph[1], S.ph[2], S.ph[3] end
   if not hx then return end
+  S.ph = { hx, hy, hz }
   local scoped = false
   -- in a mech the game's camera sits in the mech's own frame (x right, y forward, z up from its root)
   local mx, my, mz, mfx, mfy
@@ -2039,7 +2052,7 @@ local function place(w)
     mx, my, mz = upos(S.mech)
     mfx, mfy = chef.unit_rotation(S.mech)
     local l = mfx and sqrt(mfx * mfx + mfy * mfy) or 0
-    if l > 1e-4 then mfx, mfy = mfx / l, mfy / l else mfx = nil end
+    if l > 1e-4 and mx then mfx, mfy = mfx / l, mfy / l else mfx = nil end
   end
   for ci, k in ipairs(S.cams) do
     local cam = cam_of(k)
@@ -2109,6 +2122,12 @@ local function place(w)
       if state == 'mech' then
         local dx, dy = px - mx, py - my
         px, py, pz = dx * mfy - dy * mfx, dx * mfx + dy * mfy, pz - mz
+      end
+      if not (finite(px) and finite(py) and finite(pz)) then
+        -- never written: smoothing starts over from the head (one bad value in it would stay there for good)
+        S.sm = nil
+        once('badwrite', 'a camera position came out not a number: not written')
+        return
       end
       k.wx, k.wy, k.wz = px, py, pz
       -- the game's own field of view this frame (the aim zoom follows it): any value but the one we wrote last
@@ -2210,6 +2229,12 @@ local function game_view_far(x, y, z)
       if cx and not (k.wx and abs(cx - k.wx) + abs(cy - k.wy) + abs(cz - k.wz) < 0.001) then
         known = true
         far = far or (cx - x) ^ 2 + (cy - y) ^ 2 + (cz - z) ^ 2 > 3.5 ^ 2
+      end
+      -- a menu with a character preview (armory, Warbonds, Superstore) shows through a narrow camera, near the head
+      -- or not: the game's own field of view under 48 deg counts as away (never the one we wrote)
+      local fv = cam and call('Camera.vertical_fov', cam)
+      if finite(fv) and fv > 0 and fv < math.rad(48) and not (k.fvw and abs(fv - k.fvw) < 1e-4) then
+        known, far = true, true
       end
     end
   end
@@ -2690,7 +2715,7 @@ function M.update(dt)
     S.ghid, S.gst, S.gsaid = {}, {}, {}
     S.last_scan, S.rescans, S.cam_gen = nil, {}, nil
     S.hr, S.gfov, S.ghip, S.asm = nil, nil, nil, {}
-    S.gnd, S.gnd_t, S.fzp = nil, nil, nil
+    S.gnd, S.gnd_t, S.fzp, S.ph = nil, nil, nil, nil
     S.ad, S.aw, S.podu, S.puse, S.pod = nil, nil, nil, false, false
     S.away, S.away_t, S.spod, S.slow_t, S.sup_t, S.shmax, S.nopod, S.mdrop, S.pfall_t = false, 0, false, 0, 0, nil, false, nil, 0
     S.calm_t = 0
