@@ -68,6 +68,10 @@ local TABS = {
       hint = 'Anything nearer than this is not drawn, so the helmet and collar stay out of view.' },
     { id = 'aim_fov', label = 'Aiming field of view', min = 0, max = 120, step = 1, def = 0, unit = ' deg', zero = 'SAME',
       hint = 'Field of view while you aim with the right mouse button. SAME uses the field of view above.' },
+    { id = 'aim_zoom_game', label = 'Follow the game\'s aim zoom', toggle = true, def = true,
+      hint = 'With Aiming field of view at SAME: while you aim, the view zooms in as much as the game\'s own camera does for that weapon.' },
+    { id = 'aim_zoom', label = 'Extra aim zoom', min = 0, max = 50, step = 5, def = 0, unit = ' %', zero = 'OFF',
+      hint = 'With Aiming field of view at SAME: zooms in this much more while you aim.' },
     { id = 'aim_toggle', label = 'Aim button toggles', toggle = true, def = false, global = true,
       hint = 'Turn on if your game is set to toggle aiming instead of holding the button.' },
     { head = 'SMOOTHING' },
@@ -2037,6 +2041,11 @@ local function place(w)
         px, py, pz = dx * mfy - dy * mfx, dx * mfx + dy * mfy, pz - mz
       end
       k.wx, k.wy, k.wz = px, py, pz
+      -- the game's own field of view this frame (the aim zoom follows it): any value but the one we wrote last
+      if k.main then
+        local cur = call('Camera.vertical_fov', cam)
+        if type(cur) == 'number' and cur > 0.05 and cur < 3 and not (k.fvw and abs(cur - k.fvw) < 1e-4) then S.gfov = math.deg(cur) end
+      end
       local _, why = call('Camera.set_local_position', cam, k.u, Vec(px, py, pz))
       if why then once('w' .. tostring(why), 'camera write refused: %s', tostring(why))
       else
@@ -2610,7 +2619,7 @@ function M.update(dt)
     S.world, S.cams, S.head, S.hidden, S.parts, S.on, S.tx = chef.world_id(), {}, nil, {}, {}, false, nil
     S.ghid, S.gst, S.gsaid = {}, {}, {}
     S.last_scan, S.rescans, S.cam_gen = nil, {}, nil
-    S.hr = nil
+    S.hr, S.gfov, S.ghip = nil, nil, nil
     S.ad, S.aw, S.podu, S.puse, S.pod = nil, nil, nil, false, false
     S.away, S.away_t, S.spod, S.slow_t, S.sup_t, S.shmax, S.nopod, S.mdrop, S.pfall_t = false, 0, false, 0, 0, nil, false, nil, 0
     S.calm_t = 0
@@ -2712,7 +2721,15 @@ function M.update(dt)
   local vf = S.frv and V[S.frv_pre .. 'frv_fov'] or S.tpass and V[S.tpass .. '_fov'] or S.mech and V[S.mech_pre .. 'mech_fov']
     or S.empl and V[S.empl_pre .. 'empl_fov'] or S.tank and 0
     or S.act and (S.stance == 'crouch' and V.crouch_fov or S.stance == 'prone' and V.prone_fov) or 0  -- stance: first person only
-  local want = S.act and (S.aim and V.aim_fov > 0 and V.aim_fov or vf > 0 and vf or V.fov) or vf
+  -- the game's hip field of view (a slow average while not aiming): how much the game zooms for the weapon in hand is
+  -- its field of view now over that. Only from the game's own values (place reads them), so with nothing read it's 1
+  if S.gfov and not S.aim then S.ghip = S.ghip and S.ghip + (S.gfov - S.ghip) * (1 - exp(-dt * 2)) or S.gfov end
+  local zoom = 1
+  if S.act and S.aim and V.aim_fov == 0 then
+    if V.aim_zoom_game and S.gfov and S.ghip and S.ghip > 1 then zoom = max(0.15, min(1.2, S.gfov / S.ghip)) end
+    zoom = zoom * (1 - V.aim_zoom / 100)
+  end
+  local want = S.act and (S.aim and V.aim_fov > 0 and V.aim_fov or (vf > 0 and vf or V.fov) * zoom) or vf
   if want > 0 then S.fv = S.fv and S.fv + (want - S.fv) * (1 - exp(-dt * 14)) or want else S.fv = nil end
   hide_guns()
   place(w)
