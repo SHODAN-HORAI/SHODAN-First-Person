@@ -45,6 +45,13 @@ local TANK_KINDS = {}
 for k in pairs(TANKS) do TANK_KINDS[k] = true end
 local EMPL_KINDS = {}
 for k in pairs(EMPL_DIST) do EMPL_KINDS[k] = true end
+-- the game's seat layer (layer 14, see layers()), from in-game logs: the Pelican (boarding 89, seated
+-- 90-94), the Gator (driver 72, leaving 77; gunner 83, getting in 75, leaving 81) and the tank crew (96 and 97 the
+-- gunner; 102 the driver and the passengers alike: the game camera sits about 11 m behind the driver and 4 m behind a
+-- passenger, which tells them apart)
+local L14_PELICAN = { [89] = true, [90] = true, [91] = true, [92] = true, [93] = true, [94] = true }
+local L14_GATOR = { [72] = 'gator', [77] = 'gator', [83] = 'ggun', [75] = 'ggun', [81] = 'ggun' }
+local L14_TANK = { [96] = 'crew', [97] = 'crew', [102] = 'driver' }
 
 ---------------------------------------------------------------------------------------------------- settings
 local TABS = {
@@ -271,7 +278,7 @@ local TABS = {
   { name = 'TANKS', rows = {
     { head = 'BASTION PASSENGERS' },
     { id = 'tp_bastion', label = 'Third person', toggle = true, def = true,
-      hint = 'Driver and gunner always use the game camera. This switches the passenger seats.' },
+      hint = 'The passenger seats. The driver and the gunner: TANK CREW below.' },
     { id = 'bastion_fov', label = 'Field of view', min = 0, max = 120, step = 1, def = 0, unit = ' deg', zero = 'SAME',
       hint = 'Up-down view angle in a Bastion passenger seat, first or third person. SAME = the normal field of view (in third person the game default).' },
     { id = 'bastion_fwd', label = 'Forward', min = -1, max = 1, step = 0.01, def = 0, unit = ' m',
@@ -282,7 +289,7 @@ local TABS = {
       hint = 'Move the view left (minus) or right in a Bastion passenger seat (third person there must be off).' },
     { head = 'MAELSTROM PASSENGERS' },
     { id = 'tp_maelstrom', label = 'Third person', toggle = true, def = true,
-      hint = 'Driver and gunner always use the game camera. This switches the passenger seats.' },
+      hint = 'The passenger seats. The driver and the gunner: TANK CREW below.' },
     { id = 'maelstrom_fov', label = 'Field of view', min = 0, max = 120, step = 1, def = 0, unit = ' deg', zero = 'SAME',
       hint = 'Up-down view angle in a Maelstrom passenger seat, first or third person. SAME = the normal field of view (in third person the game default).' },
     { id = 'maelstrom_fwd', label = 'Forward', min = -1, max = 1, step = 0.01, def = 0, unit = ' m',
@@ -291,6 +298,49 @@ local TABS = {
       hint = 'Extra height in a Maelstrom passenger seat (third person there must be off).' },
     { id = 'maelstrom_side', label = 'Sideways', min = -0.6, max = 0.6, step = 0.01, def = 0, unit = ' m',
       hint = 'Move the view left (minus) or right in a Maelstrom passenger seat (third person there must be off).' },
+    { head = 'TANK CREW' },
+    { id = 'tgun_fp', label = 'First person as gunner', toggle = true, def = false,
+      hint = 'First person in the gunner seat of a Bastion or Maelstrom (off: the game camera). The view turns with the turret.' },
+    { id = 'tgun_fwd', label = 'Gunner forward', min = -5, max = 5, step = 0.05, def = 2.2, unit = ' m',
+      hint = 'Forward or back from your head in the gunner seat, along the look (the turret).' },
+    { id = 'tgun_up', label = 'Gunner height', min = -1, max = 5, step = 0.05, def = 1.3, unit = ' m',
+      hint = 'Up or down from your head in the gunner seat.' },
+    { id = 'tgun_side', label = 'Gunner sideways', min = -3, max = 3, step = 0.05, def = 0, unit = ' m',
+      hint = 'Left (minus) or right in the gunner seat.' },
+    { id = 'tdrv_fp', label = 'First person as driver', toggle = true, def = false,
+      hint = 'First person in the driver seat (off: the game camera). Its offsets go along the hull, so looking round turns the view in place.' },
+    { id = 'tdrv_fwd', label = 'Driver forward', min = -5, max = 5, step = 0.05, def = 0.1, unit = ' m',
+      hint = 'Forward or back from your head in the driver seat, along the hull.' },
+    { id = 'tdrv_up', label = 'Driver height', min = -1, max = 5, step = 0.05, def = 1, unit = ' m',
+      hint = 'Up or down from your head in the driver seat (the driver sits inside the hull: up puts the view at the hatch).' },
+    { id = 'tdrv_side', label = 'Driver sideways', min = -3, max = 3, step = 0.05, def = 0, unit = ' m',
+      hint = 'Left (minus) or right in the driver seat, along the hull.' },
+  } },
+  { name = 'SEATS', rows = {
+    { head = 'GATOR' },
+    { id = 'gator_tp', label = 'Third person driving', toggle = true, def = false,
+      hint = 'The game camera in the Gator driver seat (the mission vehicle).' },
+    { id = 'gdrv_fwd', label = 'Driver forward', min = -1, max = 1, step = 0.01, def = 0, unit = ' m',
+      hint = 'Forward or back from your head in the Gator driver seat.' },
+    { id = 'gdrv_up', label = 'Driver height', min = -0.4, max = 2.5, step = 0.01, def = 1.2, unit = ' m',
+      hint = 'Up or down from your head in the Gator driver seat.' },
+    { id = 'gdrv_side', label = 'Driver sideways', min = -0.6, max = 0.6, step = 0.01, def = 0, unit = ' m',
+      hint = 'Left (minus) or right in the Gator driver seat.' },
+    { id = 'ggun_tp', label = 'Third person on the gun', toggle = true, def = false,
+      hint = 'The game camera on the Gator autocannon.' },
+    { id = 'ggun_fwd', label = 'Gunner forward', min = -1, max = 1, step = 0.01, def = 0, unit = ' m',
+      hint = 'Forward or back from your head on the Gator autocannon.' },
+    { id = 'ggun_up', label = 'Gunner height', min = -0.4, max = 2.5, step = 0.01, def = 1.65, unit = ' m',
+      hint = 'Up or down from your head on the Gator autocannon.' },
+    { id = 'ggun_side', label = 'Gunner sideways', min = -0.6, max = 0.6, step = 0.01, def = 0, unit = ' m',
+      hint = 'Left (minus) or right on the Gator autocannon.' },
+    { head = 'PELICAN' },
+    { id = 'pelican_fp', label = 'First person in your seat', toggle = true, def = true,
+      hint = 'At extraction: first person in your Pelican seat, looking round with the mouse, until it takes off (then the game camera). Off: the game camera aboard.' },
+    { id = 'pelican_look', label = 'Look range', min = 30, max = 180, step = 5, def = 100, unit = ' deg',
+      hint = 'How far the mouse turns the view left or right of the way your seat faces (up and down: 60 deg).' },
+    { id = 'pelican_sens', label = 'Look speed', min = 0.2, max = 3, step = 0.1, def = 1,
+      hint = 'How fast the mouse turns the view in the Pelican seat.' },
   } },
   { name = 'MECHS', rows = {
     { head = 'MECH' },
@@ -1148,7 +1198,12 @@ local function scan_done(near)
       if d < 6 and (not best or f > best.f or f == best.f and d < bd) then best, bd = h, d end
     end
   end
-  if not best then S.head, S.parts = nil, {}; return end
+  if not best then
+    -- a seat whose game camera sits far off (tank crew, the Gator, the Pelican): a rescan finding nobody near that
+    -- camera keeps the Helldiver you have
+    if S.head and (S.tank or S.gator or S.pel or S.tl14) and chef.unit_alive(S.head.u) then return end
+    S.head, S.parts = nil, {}; return
+  end
   if not (S.head and S.head.u == best.u) then
     if best.u ~= S.mine and others_here() then
       log('your hellpod came down: taking that Helldiver (%s, came down %.0f m, followed by the camera %d times)',
@@ -1258,7 +1313,9 @@ local function check_player(w)
       local x, y, z = upos(h.u, h.node)
       -- ship: kept while it's there (the cutscene camera framing a teammate's pod made the old check let go and
       -- take the teammate's Helldiver); S.away hands the view to the game instead
-      lost = (not x and not bad_now(h.u)) or (x and chef.in_mission() and not ours and not S.galaxy and c and (x - c.x) ^ 2 + (y - c.y) ^ 2 + (z - c.z) ^ 2 > 36)
+      -- a tank's crew camera (about 11 m back), the Gator's and the Pelican's outside shots sit far from the head
+      local seatcam = S.tank or S.gator or S.pel or S.tl14
+      lost = (not x and not bad_now(h.u)) or (x and chef.in_mission() and not ours and not S.galaxy and not seatcam and c and (x - c.x) ^ 2 + (y - c.y) ^ 2 + (z - c.z) ^ 2 > 36)
     end
     if lost then
       -- only the body that died (the head can already be your reinforcement, picked while that death is still held
@@ -1449,15 +1506,43 @@ local function frv_near()
   end
   return false
 end
+-- how far the game's own camera is from your head: the shown camera while it's the game's, else the main camera's own
+-- last spot (first person writes over the shown one)
+local function game_cam_far()
+  local hx, hy, hz
+  if S.head then hx, hy, hz = upos(S.head.u, S.head.node) end
+  if not hx then return nil end
+  local px, py, pz
+  local c = not S.act and chef.camera()
+  if c then px, py, pz = c.x, c.y, c.z
+  else
+    -- the main camera's spot; before one is known as main (a far camera is never written first), the first one seen
+    for _, k in ipairs(S.cams) do
+      if k.gp and (k.main or not px) then px, py, pz = k.gp[1], k.gp[2], k.gp[3] end
+    end
+  end
+  if not (finite(px) and finite(py) and finite(pz)) then return nil end
+  return sqrt((px - hx) ^ 2 + (py - hy) ^ 2 + (pz - hz) ^ 2)
+end
 local function tank_seat(it)
   local anim = seat_anim()
   local seat = TANK_ANIM[anim]
+  -- the seat layer: 96/97 the gunner; 102 the driver when the game camera sits more than 7 m back (a passenger's sits
+  -- about 4 m back), kept while it stays 102 (first person writes over the shown camera)
+  local l = S.l14 and L14_TANK[S.l14]
+  if l == 'crew' then seat = 'crew'
+  elseif l == 'driver' and seat ~= 'passenger' and seat ~= 'crew' then
+    local far = game_cam_far()
+    if S.tseat == 'driver' or (far and far > 7) then seat = 'driver' elseif not seat then seat = 'passenger' end
+  end
   if seat ~= S.tseat then S.tseat = seat; log('%s seat %s (animation %s)', TANKS[it.kind].name, seat, tostring(anim)) end
   return seat
 end
 local SEAT = { driver = { 'frv_fwd', 'frv_up', 'frv_side' }, passenger = { 'frvp_fwd', 'frvp_up', 'frvp_side' },
   gunner = { 'frvg_fwd', 'frvg_up', 'frvg_side' }, mech = { 'mech_fwd', 'mech_up', 'mech_side' }, empl = { 'empl_fwd', 'empl_up', 'empl_side' },
-  bastion = { 'bastion_fwd', 'bastion_up', 'bastion_side' }, maelstrom = { 'maelstrom_fwd', 'maelstrom_up', 'maelstrom_side' } }
+  bastion = { 'bastion_fwd', 'bastion_up', 'bastion_side' }, maelstrom = { 'maelstrom_fwd', 'maelstrom_up', 'maelstrom_side' },
+  tgun = { 'tgun_fwd', 'tgun_up', 'tgun_side' }, tdrv = { 'tdrv_fwd', 'tdrv_up', 'tdrv_side' },
+  gator = { 'gdrv_fwd', 'gdrv_up', 'gdrv_side' }, ggun = { 'ggun_fwd', 'ggun_up', 'ggun_side' } }
 
 -- manning an emplacement: your feet stay within 1.2 m of its base (the head isn't inside its box)
 -- the exosuit's settings prefix: its body's, or the nearest body's when the head sits in an arm's box
@@ -1502,7 +1587,7 @@ local STANCES = { stand = { 0, 0, 0 }, crouch = { 'crouch_fwd', 'crouch_up', 'cr
 local GETUP_ANIM = { [43] = true, [70] = true, [71] = true, [72] = true }
 local function stance(dt, ox, oy, oz, rx, ry)
   -- tallest standing height: on foot only (the FRV gun read 2.1 m and made standing look like a crouch)
-  if not (S.frv or S.mech or S.empl or S.tank) then S.hmax = max(S.hmax or 1.2, min(oz, 1.85)) end
+  if not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) then S.hmax = max(S.hmax or 1.2, min(oz, 1.85)) end
   local r = oz / S.hmax
   -- feet speed, smoothed (a jump over 2 m in one frame is a respawn or teleport, not speed)
   if S.prx and dt > 0 and abs(rx - S.prx) + abs(ry - S.pry) < 2 then
@@ -1529,12 +1614,12 @@ local function stance(dt, ox, oy, oz, rx, ry)
     S.dive = lead > 0.5
   end
   -- diving: known lie after a dive, or already mid-air (going down fast with the head out ahead along the motion)
-  local dv = S.dive == true and S.fall and not (S.frv or S.mech or S.empl or S.tank)
-  if not dv and S.fall and not (S.frv or S.mech or S.empl or S.tank) and r < 0.75 and l > 0.3 then dv = (ox * S.fall[1] + oy * S.fall[2]) / l > 0.5 end
+  local dv = S.dive == true and S.fall and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel)
+  if not dv and S.fall and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) and r < 0.75 and l > 0.3 then dv = (ox * S.fall[1] + oy * S.fall[2]) / l > 0.5 end
   -- S.diving = the hide switch for this dive's direction, or false
   dv = dv and (S.fall[4] > 0.5 and 'dive_hide' or S.fall[4] < -0.5 and 'dive_hide_back' or 'dive_hide_side')
   -- a dive lasts until you stand (standing height held 0.3 s), so its hiding and forward push hold while you get up
-  local seated = S.frv or S.mech or S.empl or S.tank
+  local seated = S.frv or S.mech or S.empl or S.tank or S.gator or S.pel
   S.up_t = (S.stance == 'stand' or r > 0.8) and (S.up_t or 0) + dt or 0
   if not dv and S.diving and not seated and S.up_t < 0.3 then dv = S.diving end
   -- getting up: risen out of prone, until standing the same way
@@ -1584,7 +1669,7 @@ local function stance(dt, ox, oy, oz, rx, ry)
   -- backward dive in the air (until S.oblie = lying still on your back)
   if S.diving == 'dive_hide_back' and not S.getup and not S.oblie then wf = wf + V.bdive_fwd end
   -- face view: the face already places the view, so no guessed pushes or lifts while down
-  S.eyes = V.eyes and (S.diving or S.stance == 'prone') and not S.getup and not (S.frv or S.mech or S.empl or S.tank) or false
+  S.eyes = V.eyes and (S.diving or S.stance == 'prone') and not S.getup and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) or false
   if S.eyes then wf, wu, ws = 0, 0, 0 end
   S.sf, S.su = (S.sf or 0) + (wf - (S.sf or 0)) * a, (S.su or 0) + (wu - (S.su or 0)) * a
   S.ss = (S.ss or 0) + (ws - (S.ss or 0)) * a
@@ -1666,10 +1751,10 @@ local function target(dt)
   -- on your back the head sits in the collar (black looking down); aiming fixes it by moving the head 0.24 m toward the
   -- hips and 0.17 m up (log 2026-11-07), so hold the view at that pose: limits, never extra lifts (stacked = too high)
   -- only once landed (lying idle 48): in the air it pulled the view 0.3 m toward the legs (2026-11-07)
-  local onb = (S.onback or S.diving == 'dive_hide_back') and S.an == 48 and not S.getup and not (S.frv or S.mech or S.empl or S.tank)
+  local onb = (S.onback or S.diving == 'dive_hide_back') and S.an == 48 and not S.getup and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel)
   S.oblie = onb
   -- the belly shows for the whole time on your back, the dive's air part too (0.3.57 only showed it once landed)
-  local bl = (S.onback or S.diving == 'dive_hide_back') and not S.getup and not (S.frv or S.mech or S.empl or S.tank) or false
+  local bl = (S.onback or S.diving == 'dive_hide_back') and not S.getup and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) or false
   if bl ~= (S.belly or false) then S.belly = bl; apply_hiding() end
   S.obk = (S.obk or 0) + ((onb and 1 or 0) - (S.obk or 0)) * (1 - exp(-dt * 10))
   if S.obk > 0.005 then
@@ -1683,7 +1768,7 @@ local function target(dt)
   -- snaps (a max() with a shrinking distance jumped 0.5 m in one frame, 2026-11-07). S.ga = the clamp's reach now
   -- get-ups only: in a backward dive the head ends 0.7 m behind the hips, so letting go at lying slid the view back
   -- through the chest (black screen, log 2026-11-07)
-  local low = V.getup_cam and S.getup and not (S.frv or S.mech or S.empl or S.tank)
+  local low = V.getup_cam and S.getup and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel)
   local want = low and V.getup_ahead * rise or 0
   if low then S.gw, S.gr = 1, want else S.gw = (S.gw or 0) * exp(-dt * 10) end
   S.ga = S.gw * (S.gr or 0)
@@ -1738,7 +1823,7 @@ local function target(dt)
   -- a look that isn't a number this frame: placed as if looking straight ahead, so first person holds
   if c and finite(c.fx) and finite(c.fy) and finite(c.fz) then fx, fy, fz = c.fx, c.fy, c.fz end
   local hl = sqrt(fx * fx + fy * fy); if hl < 1e-4 then hl = 1 end
-  local seat = SEAT[S.frv or S.mech and 'mech' or S.empl and 'empl' or S.tpass or '']
+  local seat = SEAT[S.frv or S.mech and 'mech' or S.empl and 'empl' or S.tpass or S.tcrew or S.gator or '']
   local pre = S.frv and S.frv_pre or S.mech and S.mech_pre or S.empl and S.empl_pre or ''
   local f = V.fwd + (seat and V[pre .. seat[1]] or S.sf or 0)
   local up = V.up + (seat and V[pre .. seat[2]] or S.su or 0)
@@ -1746,7 +1831,7 @@ local function target(dt)
   -- a tank passenger seat or an FRV's driver or passenger seat: the seat's own Forward and Sideways go along the
   -- vehicle (its facing), so looking round turns the view in place instead of swinging it round the seat. The eye's
   -- offsets still follow the look; the gun turns with your aim, so the gunner seat stays with the look.
-  local vu = S.tpass and S.tank and S.tank.still and S.tank.u or (S.frv == 'driver' or S.frv == 'passenger') and S.frv_u or nil
+  local vu = (S.tpass or S.tcrew == 'tdrv') and S.tank and S.tank.still and S.tank.u or (S.frv == 'driver' or S.frv == 'passenger') and S.frv_u or nil
   local vf, vs, vx, vy = 0, 0, 0, 1
   local hull = false
   if vu and seat then
@@ -1758,7 +1843,7 @@ local function target(dt)
   -- the hull's frame eased in when it only becomes usable mid-seat (a tank settling after you climbed in): the
   -- offsets moved from the look's frame to the hull's in one frame, up to the whole offset. Entering a seat whose
   -- frame is there at once takes it at once
-  local seatkey = seat and (S.tpass or S.frv) or nil
+  local seatkey = seat and (S.tpass or S.tcrew or S.frv) or nil
   if seatkey ~= S.hullk then S.hullk, S.hullw = seatkey, hull and 1 or 0 end
   S.hullw = hull and min(1, (S.hullw or 0) + dt / 0.5) or 0
   if hull then
@@ -1767,14 +1852,14 @@ local function target(dt)
     f, sd = f - vf, sd - vs
   end
   -- aiming on foot: the VIEW WHILE AIMING offsets, eased in and out with the aim (S.aimw 0..1)
-  local aiming = S.aim and S.act and not (S.frv or S.mech or S.empl or S.tank) or false
+  local aiming = S.aim and S.act and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) or false
   local at = V.aimpos_time
   S.aimw = at > 0 and max(0, min(1, (S.aimw or 0) + (aiming and dt or -dt) / at)) or (aiming and 1 or 0)
   if S.aimw > 0 then
     local e = S.aimw * S.aimw * (3 - 2 * S.aimw)   -- eased: starts and ends gently
     f, up, sd = f + e * V.aimpos_fwd, up + e * V.aimpos_up, sd + e * V.aimpos_side
   end
-  local foot = not (S.frv or S.mech or S.empl or S.tank or S.diving or S.onback or S.getup or S.down)
+  local foot = not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel or S.diving or S.onback or S.getup or S.down)
   -- the ground under you, for the crosshair fix looking down: your feet while they're steady, held through a jump or
   -- a fall (the ground you left isn't the ground below you) until 0.3 s after they settle
   local vz = (S.fzp and dt > 0) and (rz - S.fzp) / dt or 0
@@ -2071,7 +2156,7 @@ local function neck(w)
   local u = S.head and S.head.u
   -- S.stance is nil until the first stance change (0.3.130: nothing worked until the first crouch): nil = standing
   local ok = V.imm_on and S.shown and u and (S.stance or 'stand') ~= 'prone'
-    and not (S.aim or S.diving or S.getup or S.frv or S.mech or S.empl or S.tank or S.pod or S.down or S.dead)
+    and not (S.aim or S.diving or S.getup or S.frv or S.mech or S.empl or S.tank or S.gator or S.pel or S.pod or S.down or S.dead)
   if not ok then n.want, n.run, n.rt, n.px = nil, false, 0, nil; return end
   local c = chef.camera()
   local bx, by = chef.unit_rotation(u)
@@ -2156,6 +2241,19 @@ local function restore(k, cam)
   k.near0, k.fov0, k.fvw = nil, nil, nil
 end
 
+-- the Pelican seat: the view looks the seat's way plus the mouse's turn (the game's outside shot doesn't follow it)
+local function pel_look(k, cam)
+  local d = S.pel_dir
+  if not d then return end
+  local cy, sy = math.cos(S.pel_yaw or 0), math.sin(S.pel_yaw or 0)
+  local lx, ly = d[1] * cy - d[2] * sy, d[1] * sy + d[2] * cy
+  local cp = math.cos(S.pel_pitch or 0)
+  local nq = call('Quaternion.look', Vec(lx * cp, ly * cp, math.sin(S.pel_pitch or 0)), Vec(0, 0, 1))
+  local _, why = call('Camera.set_local_rotation', cam, k.u, nq)
+  if why then once('pq' .. tostring(why), 'Pelican seat: rotation write refused: %s', tostring(why)); return end
+  wrote(k, nq)
+end
+
 local function place(w)
   -- hellpod hand-off: each frame write the game's own camera spot moved toward first person by what's left of 0.25 s
   local bw = not S.act and S.pout and S.tx and 1 - (S.t - S.pout) / 0.25 or 0
@@ -2219,6 +2317,9 @@ local function place(w)
       -- in a backward dive's air part it is always the squeezed one (0.12-0.14 m ahead, 1.0.32 log), never a scope
       local air = S.diving == 'dive_hide_back' and not S.oblie
       state = d < 0.4 and al > 0.1 and not air and 'scope' or d > 8 and not warp and 'far' or 'ours'
+      -- a seat whose game camera sits far off (the Pelican's outside shot, a tank crew seat, the Gator) and where you
+      -- chose first person: written like a near one
+      if state == 'far' and (S.pel_seat or S.tcrew or S.gator) and not mfx then state = 'ours' end
       if state ~= k.state and d < 0.4 then log('camera %d: %.2f m from the head, %.2f m ahead', ci, d, al) end
       if k.main then
         S.gcx, S.gcy, S.gcz = cx, cy, cz  -- the game's own camera: the line it shoots along
@@ -2287,7 +2388,8 @@ local function place(w)
         local _, why = call('Camera.set_local_position', cam, k.u, Vec(px, py, pz))
         if why then once('w' .. tostring(why), 'camera write refused: %s', tostring(why))
         else
-          if k.main and state == 'ours' then
+          if S.pel_seat and state == 'ours' then pel_look(k, cam)
+          elseif k.main and state == 'ours' then
             pitch_limit(k, cam, S.dt or 0.016)
             if not k.qw then view_limit(k, cam, S.dt or 0.016) end
             if not (k.qw or k.yq) then k.qlog = nil; aim_fix(k, cam, S.dt or 0.016) end
@@ -2504,7 +2606,7 @@ for i = 252, 265 do TERM_STATES[i] = i ~= 253 end
 -- those too), ten times a second: it asks the engine straight, past the loader's guard (see anim)
 local function term_check()
   local h = S.head
-  local busy = S.down_any or S.dead or S.down or S.diving or S.getup or S.pod or S.nopod or S.frv or S.mech or S.empl or S.tank
+  local busy = S.down_any or S.dead or S.down or S.diving or S.getup or S.pod or S.nopod or S.frv or S.mech or S.empl or S.tank or S.gator or S.pel
   if not (h and chef.in_mission()) or busy then S.term, S.term_t = false, nil; return end
   if S.term_t and S.t < S.term_t then return end
   S.term_t = S.t + 0.1
@@ -2585,8 +2687,11 @@ local function update_act()
   elseif V.tp_term and S.term then why = 'terminal'
   elseif V.tp_menus and S.map_open then why = 'map'
   elseif V.tp_menus and S.strat_open then why = 'stratagems'
-  elseif V.tp_down and S.down and not (S.frv or S.mech or S.empl or S.tank) then why = 'knocked down'  -- seats look like lying down
-  elseif S.tank and (S.tank.seat == 'crew' or V[S.tank.tp]) then why = 'tank ' .. S.tank.seat
+  elseif V.tp_down and S.down and not S.pod and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) then why = 'knocked down'  -- seats look like lying down
+  elseif S.pel and (not V.pelican_fp or S.pel_gone) then why = 'Pelican'
+  elseif S.tank and (S.tank.seat == 'crew' and not V.tgun_fp or S.tank.seat == 'driver' and not V.tdrv_fp
+    or S.tank.seat ~= 'crew' and S.tank.seat ~= 'driver' and V[S.tank.tp]) then why = 'tank ' .. tostring(S.tank.seat)
+  elseif S.gator and V[S.gator == 'ggun' and 'ggun_tp' or 'gator_tp'] then why = 'Gator'
   elseif S.frv and (V[S.frv_pre .. 'frv_tp'] or V[S.frv_pre .. FRV_TP[S.frv]]) then why = 'FRV'
   elseif S.mech and V[S.mech_pre .. 'tp_mech'] then why = 'mech'
   elseif S.empl and V[S.empl_pre .. 'tp_empl'] then why = 'emplacement' end
@@ -3027,6 +3132,67 @@ local function pad_step()
   PADT.was = active
 end
 
+-- the Pelican at extraction: the game cuts to its outside shots as soon as you sit. First person stays in your seat,
+-- the mouse looking round within Look range of the way the seat faces, until take-off (the seat 6 m above the lowest
+-- it sat, rising over 2 m/s for 0.5 s, or 30 m from where it sat); then the game camera for the flight. The first 5 s
+-- aboard always stay (alone, it leaves at once). The seat view starts once you've sat still 0.5 s in a seated state.
+local function pelican_step(on, l14, dt)
+  if not on then
+    if S.pel then log('out of the Pelican') end
+    S.pel, S.pel_seat, S.pel_gone, S.pel_t, S.pel_mv = false, false, false, nil, nil
+    return
+  end
+  if not S.pel then S.pel, S.pel_t = true, S.t; log('boarding the Pelican (layer 14 = %s)', tostring(l14)) end
+  local x, y, z = upos(S.head.u)
+  if not x then return end
+  local mv = S.pel_mv
+  if not mv or abs(x - mv[1]) + abs(y - mv[2]) + abs(z - mv[3]) > 0.15 then mv = { x, y, z, S.t }; S.pel_mv = mv end
+  local early = S.t - S.pel_t < 5
+  if V.pelican_fp and not S.pel_seat and not S.pel_gone and l14 >= 90 and S.t - mv[4] > 0.5 then
+    local fx, fy = chef.unit_rotation(S.head.u)
+    local l = (finite(fx) and finite(fy)) and sqrt(fx * fx + fy * fy) or 0
+    S.pel_seat, S.pel_at, S.pel_low, S.pel_climb, S.pel_pz = true, { x, y, z }, z, nil, z
+    S.pel_dir = l > 1e-4 and { fx / l, fy / l } or { 0, 1 }
+    S.pel_yaw, S.pel_pitch = 0, 0
+    log('in your Pelican seat: first person until take-off')
+  end
+  if not S.pel_seat then return end
+  S.pel_low = min(S.pel_low, z)
+  local vz = dt > 0 and (z - S.pel_pz) / dt or 0
+  S.pel_pz = z
+  S.pel_climb = vz > 2 and (S.pel_climb or S.t) or nil
+  local a = S.pel_at
+  local up = z - S.pel_low > 6 or (S.pel_climb ~= nil and S.t - S.pel_climb > 0.5) or abs(x - a[1]) + abs(y - a[2]) > 30
+  if up and not early then S.pel_seat, S.pel_gone = false, true; log('the Pelican took off: game camera'); return end
+  if not P.open and chef.mouse_delta then
+    local dx, dy = chef.mouse_delta()
+    if finite(dx) and finite(dy) and abs(dx) < 2000 and abs(dy) < 2000 then
+      local k = 0.0025 * V.pelican_sens
+      local ym, pm = math.rad(V.pelican_look), math.rad(60)
+      S.pel_yaw = max(-ym, min(ym, S.pel_yaw - dx * k))
+      S.pel_pitch = max(-pm, min(pm, S.pel_pitch - dy * k))
+    end
+  end
+end
+
+-- the seats known only by the seat layer (the Gator, the Pelican; the tank crew's seat): read with the other layers,
+-- held 1 s through a frame the layers aren't read (the camera settling, a check refused)
+local function seat_layer_step(dt)
+  -- (also the new pieces' mesh probe and the re-hide window: step is at Lua 5.1's 60-upvalue limit)
+  if probe_one() or (S.rehide and S.t < S.rehide) then apply_hiding() end
+  local L = chef.in_mission() and S.head and layers()
+  if L then S.l14, S.l14_t = L[14], S.t
+  elseif S.l14_t and S.t - S.l14_t > 1 then S.l14, S.l14_t = nil, nil end
+  local l14 = type(S.l14) == 'number' and S.l14 or -1
+  S.tl14 = L14_TANK[l14]
+  local g = L14_GATOR[l14] or false
+  if g ~= S.gator then
+    S.gator = g
+    log(g and ('Gator seat: ' .. (g == 'ggun' and 'gunner' or 'driver') .. ' (layer 14 = %d)') or 'out of the Gator', l14)
+  end
+  pelican_step(L14_PELICAN[l14] and S.head ~= nil, l14, dt)
+end
+
 local function step(dt)
   local busy = P.capture ~= nil
   if S.reset_req then reset_camera(S.reset_req); S.reset_req = nil; say('CAMERA RESET') end
@@ -3056,6 +3222,7 @@ local function step(dt)
     S.down_any, S.getup, S.rising = false, false, false
     S.act, S.down, S.stance, S.hmax, S.fv = false, false, nil, nil, nil
     S.mech, S.frv, S.empl, S.tank, S.tpass = false, false, false, false, false
+    S.tcrew, S.gator, S.pel, S.pel_seat, S.pel_gone, S.pel_t, S.pel_mv, S.l14, S.l14_t = false, false, false, false, false, nil, nil, nil, nil
     S.dead, S.corpse, S.corpses, S.avs, S.av_gen, S.dgen, S.dcams = false, nil, nil, nil, nil, nil, nil
     S.corpse_h = nil
     S.mine, S.drop_t, S.fall_t, S.lcz, S.fall_max, S.avtop, S.avfollow = nil, nil, 0, nil, 0, {}, {}
@@ -3097,7 +3264,7 @@ local function step(dt)
   refresh_cams()
   S.look = S.look - dt
   if S.look <= 0 then S.look = 0.5; check_player(w); apply_hiding() end
-  if probe_one() or (S.rehide and S.t < S.rehide) then apply_hiding() end
+  seat_layer_step(dt)
   S.frv_t = S.frv_t - dt
   if S.frv_t <= 0 then
     S.frv_t = 0.25
@@ -3125,7 +3292,8 @@ local function step(dt)
     -- every listed tank's settle clock runs (the watch's own spot: no engine call), so one already sitting there 3 s
     -- counts as settled the moment you climb in
     if tank_watch then for _, t in ipairs(tank_watch.items) do settled(t) end end
-    if TANK_ANIM[seat_anim()] and tank_watch and S.head then
+    local tl14 = S.tl14
+    if (TANK_ANIM[seat_anim()] or tl14) and tank_watch and S.head then
       local hx, hy = upos(S.head.u, S.head.node)
       local td = 7
       for _, t in ipairs(hx and tank_watch.items or {}) do
@@ -3134,7 +3302,7 @@ local function step(dt)
       end
     end
     -- a seat animation held 0.5 s to get in, 0.5 s without one to get out (standing on top isn't a seat)
-    local sit = tk and TANK_ANIM[seat_anim()] ~= nil
+    local sit = tk and (TANK_ANIM[seat_anim()] ~= nil or tl14 ~= nil)
     S.tank_on = sit and (S.tank_on or 0) + 1 or 0
     S.tank_off = sit and 0 or (S.tank_off or 0) + 1
     if sit and (S.tank or S.tank_on >= 2) then
@@ -3147,6 +3315,8 @@ local function step(dt)
       S.tank, S.tseat = false, nil; log('out of the tank')
     end
     S.tpass = S.tank and S.tank.seat == 'passenger' and S.tank.id or false
+    -- the crew seats in first person (opt-in): their own offsets, the driver's along the hull
+    S.tcrew = S.tank and (S.tank.seat == 'crew' and V.tgun_fp and 'tgun' or S.tank.seat == 'driver' and V.tdrv_fp and 'tdrv') or false
     local mech = inside(mech_watch, nil, S.mech)
     S.mech_pre = mech and mech_model(mech) or ''
     mech = mech and mech.unit or false
