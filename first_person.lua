@@ -74,6 +74,8 @@ local TABS = {
       hint = 'With Aiming field of view at SAME: zooms in this much more while you aim.' },
     { id = 'aim_toggle', label = 'Aim button toggles', toggle = true, def = false, global = true,
       hint = 'Turn on if your game is set to toggle aiming instead of holding the button.' },
+    { id = 'aim_game', label = 'Aim from the game', toggle = true, def = false, global = true,
+      hint = 'Knows you aim from the game itself (its animation), so toggle aiming and a controller trigger work too. Off: the right mouse button only.' },
     { head = 'SMOOTHING' },
     { id = 'smooth', label = 'Smoothing up-down', min = 0, max = 10, step = 1, def = 3, zero = 'OFF',
       hint = 'Takes the up-down head bob out of walking and running. Higher is calmer.' },
@@ -2514,6 +2516,26 @@ local function term_check()
   end
 end
 
+-- the game's animation layers, numbered as the in-game logs number them (the Nth value of Unit.animation_get_state):
+-- 4 the upper body (its aim states), 9 actions (terminals, jumps, the reinforcement pod), 14 seats and vehicles, 22
+-- the legs (running). Read 20 times a second and only for a feature that needs them, never down, dead or in a pod
+-- (anim refuses those too). The same table is refilled, so nothing is made per read.
+local LAY = {}
+local function fill_lay(...)
+  local n = select('#', ...)
+  for i = 1, max(n, #LAY) do LAY[i] = (select(i, ...)) end
+  return n
+end
+local function layers()
+  if S.lay_t and S.t - S.lay_t < 0.05 and S.t >= S.lay_t then return S.lay end
+  S.lay_t = S.t
+  local h = S.head
+  if not (h and chef.in_mission()) or S.down_any or S.dead or S.down or S.pod or S.nopod then S.lay = nil; return nil end
+  if fill_lay(anim(h.u, true)) == 0 or type(LAY[1]) ~= 'number' then S.lay = nil; return nil end
+  S.lay = LAY
+  return LAY
+end
+
 -- hellpod (ship): the diver's animation, layer 13 (the 14th value of Unit.animation_get_state): 15 from the moment
 -- you use a pod (drop zone screen), 17 once inside, back to 3 as you climb out (1.0.27 log 2026-11-09). Game camera for
 -- all of it, never keys or the mouse (user). Mission: first person as soon as the new Helldiver exists.
@@ -3162,6 +3184,16 @@ local function step(dt)
     if rmb and not S.rmb then S.aim = not S.aim end
   else S.aim = rmb end
   S.rmb = rmb
+  -- Aim from the game: its upper-body layer aims at 59 standing, 53 prone, and 0 crouched (the legs' layer 2 or 3).
+  -- The game knows a toggle and a controller trigger the mouse button doesn't; with no layers (a seat check refused,
+  -- the camera settling) the mouse button decides as before
+  if V.aim_game and not P.open then
+    local L = layers()
+    if L then
+      local l4, l22 = L[4], L[22]
+      S.aim = l4 == 59 or l4 == 53 or (l4 == 0 and (l22 == 2 or l22 == 3)) or (rmb and not V.aim_toggle) or false
+    end
+  end
   neck(w)
   local vf = S.frv and V[S.frv_pre .. 'frv_fov'] or S.tpass and V[S.tpass .. '_fov'] or S.mech and V[S.mech_pre .. 'mech_fov']
     or S.empl and V[S.empl_pre .. 'empl_fov'] or S.tank and 0
