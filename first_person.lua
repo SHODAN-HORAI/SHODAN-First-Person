@@ -121,6 +121,11 @@ local TABS = {
       hint = 'Switches to the game camera while the map or stratagem list is out.' },
     { id = 'tp_down', label = 'Third person when knocked down', toggle = true, def = false,
       hint = 'Switches to the game\'s camera while you tumble or lie dead, and back once you are up.' },
+    { head = 'DEATH' },
+    { id = 'death_fx', label = 'Death effect', toggle = true, def = true, global = true,
+      hint = 'When you die, the view on your body blurs in and out in slow swells for about 4 s, then cuts to black until your reinforcement drops in or the camera moves to a teammate.' },
+    { id = 'death_blink', label = 'Death effect: blinking', toggle = true, def = true, global = true,
+      hint = 'With Death effect on: your eyes blink at random, often several times in quick succession, then close before the black.' },
   } },
   { name = 'AIM', rows = {
     { head = 'VIEW WHILE AIMING' },
@@ -3549,10 +3554,169 @@ function HUD.draw()
     chef.text(x0 + floor((ax + 2) * s), y0 + floor(10 * s), arm.name or '', max(7, floor(10 * s)), col(170, 175, 180, a), L + 3)
   end
 end
--- everything drawn over the game each update: the Mech HUD
+-- Death effect (CAMERA tab, DEATH): only from the death seen in the animation (HUD.dying; S.dead alone also fires on a
+-- living body, 0.5 s out of a reinforcement pod, 1.2.9 log): the view blurs in and out, the eyes blink (Blinking), then a cut to
+-- black held until a hellpod drop is seen (the game camera falling, 1 s after the death at the earliest) or you are up.
+-- The blur is the game's own UI material content/ui/shared/material/gui_blur: it has no strength setting, so its
+-- alpha fades it in and out. Drawn by a screen GUI of mine in the game's UI world (the first world that isn't the main
+-- one, as the loader finds it), where the game draws its menus and their blur.
+-- shortcut: a ragdoll or spectated teammate falling 25+ m/s for 0.25 s also ends the black; check the fall is the pod if
+-- that shows up
+HUD.BLUR = '2391483abbda5a58'
+HUD.BLACK = 3.9                    -- the cut to black (s after the death)
+HUD.MAXT = 15                      -- the black ends by then even with no drop seen (s after the death)
+HUD.SIGMA = 12                     -- the UI blur's strength during the death (the game's own default 2.5)
+-- the UI blur's strength is a render setting (ui_blur_sigma, in the player's user_settings.config): raised for the
+-- death, put back at the cut to black or whenever the effect stops. Only in the game's memory (the loader refuses a
+-- mod saving settings). Application.set_render_setting works on it (1.2.48 log: 2.5 -> 12 and back)
+function HUD.sigma(on)
+  if on == (HUD.sig0 ~= nil) then return end
+  if on then
+    if HUD.sig_bad then return end
+    local v0, why0 = call('Application.user_setting', 'render_settings', 'ui_blur_sigma')
+    local cur = call('Application.render_setting', 'ui_blur_sigma')
+    log('death blur: ui_blur_sigma saved %s (%s), live %s', tostring(v0), tostring(why0), tostring(cur))
+    v0 = tonumber(cur) or tonumber(v0)
+    if not v0 then HUD.sig_bad = true; log('death blur: no blur strength to go back to, left alone'); return end
+    local _, why = call('Application.set_render_setting', 'ui_blur_sigma', tostring(HUD.SIGMA))
+    if why then _, why = call('Application.set_render_setting', 'ui_blur_sigma', HUD.SIGMA) end
+    if why then HUD.sig_bad = true; log('death blur: set_render_setting refused (%s)', tostring(why)); return end
+    HUD.sig0, HUD.sig_num = v0, type(cur) == 'number'
+    log('death blur: strength %s -> %s (live now %s)', tostring(v0), HUD.SIGMA, tostring(call('Application.render_setting', 'ui_blur_sigma')))
+  else
+    local v0 = HUD.sig0
+    HUD.sig0 = nil
+    local _, why = call('Application.set_render_setting', 'ui_blur_sigma', tostring(v0))
+    if why then _, why = call('Application.set_render_setting', 'ui_blur_sigma', v0) end
+    log('death blur: strength back to %s (%s)', tostring(v0), why and ('refused: ' .. tostring(why)) or 'ok')
+  end
+end
+-- a fresh random plan every death: the blur's swells (a new strength every 0.6 to 1.2 s, eased, taking turns between
+-- full 0.9 to 1 and 0.55 to 0.75: the material's blur is fixed, so its alpha is the only strength there is) and the
+-- blinks, in bursts of 1 to 3 at random gaps, quick, a quarter of them not shut all the way, slower and longer shut
+-- toward the black; inside a burst the next blink can come before the lids are fully open. Last, the eyes close
+-- slowly (0.4 to 0.6 s) and stay shut into the black
+function HUD.plan()
+  local R, n, bl, bt = math.random, { { 0, 0 } }, {}, 0
+  while bt < HUD.BLACK do
+    bt = bt + 0.6 + 0.6 * R()
+    n[#n + 1] = { bt, #n % 2 == 1 and 0.9 + 0.1 * R() or 0.55 + 0.2 * R() }
+  end
+  local t = 0.4 + 0.6 * R()
+  while t < HUD.BLACK - 0.9 do
+    local k = t / HUD.BLACK
+    for _ = 1, R(1, 3) do
+      -- c: shutting (s), h: held shut, o: opening, d: how far shut (1 = all the way)
+      local b = { t = t, c = 0.05 + 0.04 * R() + 0.06 * k, h = 0.2 * k * R(), o = 0.08 + 0.08 * R() + 0.15 * k,
+        d = R() < 0.25 and 0.5 + 0.4 * R() or 1 }
+      bl[#bl + 1] = b
+      t = t + b.c + b.h + b.o * (0.3 + 0.7 * R())
+    end
+    t = t + 0.3 + 0.7 * R()
+  end
+  local c = 0.4 + 0.2 * R()
+  bl[#bl + 1] = { t = HUD.BLACK - c, c = c, h = 99, o = 1, d = 1 }
+  return { n = n, bl = bl }
+end
+function HUD.blur(a, sw, sh)
+  local ws, main, uw = call('Application.worlds'), chef.world(), nil
+  if type(ws) == 'table' then for i = 1, #ws do if ws[i] ~= main then uw = ws[i]; break end end end
+  if not uw then once('blurw', 'death effect: no UI world for the blur (%s worlds)', type(ws) == 'table' and #ws or '?'); return end
+  if HUD.bwld ~= uw then
+    -- (a GUI left behind in an old world draws nothing: immediate GUIs are empty unless drawn into this frame)
+    HUD.bwld = uw
+    local ok = call('Application.can_get', 'material', call('IdString64.from_hex', HUD.BLUR))
+    local g, why = call('World.create_screen_gui', uw, 'immediate')
+    HUD.bgui = g
+    log('death effect: blur material loaded %s, GUI %s', tostring(ok), g and 'made' or tostring(why))
+  end
+  if not HUD.bgui then return end
+  -- (the material id made fresh each call, as the loader does: a kept one can point at another temporary)
+  local _, why = call('Gui.bitmap', HUD.bgui, call('IdString64.from_hex', HUD.BLUR), call('Vector3', 0, 0, 80),
+    call('Vector2', sw, sh), call('Color', floor(255 * a), 255, 255, 255))
+  if why then once('blurd', 'death effect: blur refused (%s)', tostring(why)) end
+end
+-- the death seen in the animation: layer 13 (the 14th value) turns 103 the moment you die, about 4 s before the game
+-- removes the animation (S.dead). Standing: the layers seat_layer_step read this frame (a death with no knockdown,
+-- 1.2.8 log). Down, where those reads stop: read here, with the state machine checked the same frame (asking a torn-down
+-- one crashed the game, 2026-11-07). The view is left as it was.
+function HUD.dying()
+  if not chef.in_mission() then S.dying, S.dying_u = nil, nil; return end
+  local h = S.head
+  if S.dying then
+    if h and h.u ~= S.dying_u and not S.down_any then S.dying, S.dying_u = nil, nil end   -- your next Helldiver, standing
+    -- a false alarm: a real death takes the body's animation away in about 4.5 s (1.2.9 logs); still there after 8 s,
+    -- the body is alive and the effect ends
+    if S.dying and S.t - S.dying > 8 and chef.unit_alive(S.dying_u) and call('Unit.has_animation_state_machine', S.dying_u) == true then
+      S.dying, S.dying_u = nil, nil; log('death effect: the body still has its animation 8 s on, not a death: effect off')
+    end
+    return
+  end
+  if not h or S.dead or S.nopod then return end
+  local l13
+  if not S.down_any then
+    l13 = S.l14_t == S.t and S.l14 or nil
+  else
+    if not (UnitApi and UnitApi.animation_get_state and chef.unit_alive(h.u)) or call('Unit.has_animation_state_machine', h.u) ~= true then return end
+    local st = { pcall(UnitApi.animation_get_state, h.u) }
+    l13 = st[1] and st[15] or nil
+  end
+  if l13 == 103 then S.dying, S.dying_u, S.dying_n, S.dpos = S.t, h.u, h.node, nil; log('death seen in the animation (layer 13 = 103, %s)', S.down_any and 'down' or 'standing') end
+end
+function HUD.death()
+  if V.death_fx then HUD.dying() end   -- (no extra animation reads with the effect off)
+  if not (V.death_fx and (S.on or S.keep == true) and chef.in_mission() and S.dying) then S.dth0, S.dth1 = nil, nil; HUD.sigma(false); return end
+  if not S.dth0 then S.dth0, S.dplan = S.dying, HUD.plan(); log('death effect: start (%d blinks)', #S.dplan.bl); HUD.sigma(true) end
+  local t = S.t - S.dth0
+  if not S.dth1 and t > 1 and (S.pfall_t or 0) >= 0.25 then S.dth1 = S.t; log('death effect: drop seen after %.1f s, black ends', t) end
+  if not S.dth1 and t > HUD.MAXT then S.dth1 = S.t; log('death effect: no drop seen in %d s, black ends', HUD.MAXT) end
+  -- multiplayer: the game camera leaving your body (over 6 m and the view not ours, check_player's rule) = it shows a
+  -- teammate until your reinforcement, so the black ends there (it held to 8 s, the camera left at about 6 s: 1.2.54 log)
+  if not S.dth1 and t > 1 and others_here() then
+    if chef.unit_alive(S.dying_u) then S.dpos = { upos(S.dying_u, S.dying_n) } end
+    local c, p, ours = chef.camera(), S.dpos, false
+    for _, k in ipairs(S.cams) do if k.state == 'ours' or k.state == 'scope' then ours = true end end
+    local d = c and p and p[3] and sqrt((p[1] - c.x) ^ 2 + (p[2] - c.y) ^ 2 + (p[3] - c.z) ^ 2)
+    if d and d > 6 and not ours then S.dth1 = S.t - 0.5; log('death effect: game camera %.0f m from your body after %.1f s (a teammate), black ends', d, t) end  -- (- 0.5: the fade already over, a cut)
+  end
+  local sw, sh = chef.screen()
+  local L = chef.TOP + 80
+  if S.dth1 or t >= HUD.BLACK then HUD.sigma(false) end
+  if S.dth1 then
+    local a = 1 - (S.t - S.dth1) / 0.5
+    if a > 0 then chef.rect(0, 0, sw, sh, col(0, 0, 0, floor(255 * a)), L + 5) end
+    return
+  end
+  if t >= HUD.BLACK then chef.rect(0, 0, sw, sh, col(0, 0, 0, 255), L + 5); return end
+  local n, k = S.dplan.n, 1
+  while n[k + 1][1] < t do k = k + 1 end   -- (the last swell ends past the black)
+  local f = (t - n[k][1]) / (n[k + 1][1] - n[k][1])
+  HUD.blur(n[k][2] + (n[k + 1][2] - n[k][2]) * f * f * (3 - 2 * f), sw, sh)
+  chef.rect(0, 0, sw, sh, col(0, 0, 0, floor(100 * t / HUD.BLACK)), L + 1)   -- darker toward the end
+  if not V.death_blink then return end
+  local c = 0
+  for _, b in ipairs(S.dplan.bl) do
+    local s = t - b.t
+    if s > 0 then c = max(c, b.d * (s < b.c and s / b.c or s < b.c + b.h and 1 or max(0, 1 - (s - b.c - b.h) / b.o))) end
+  end
+  if c > 0 then
+    -- the lids' edges soft (4 fading bands)
+    local bh, h = max(1, floor(sh * 0.025)), floor(sh / 2 * c + 0.5)
+    chef.rect(0, sh - h, sw, h, col(0, 0, 0, 255), L + 4)
+    chef.rect(0, 0, sw, h, col(0, 0, 0, 255), L + 4)
+    for k = 1, 4 do
+      local ka = floor((255 - 55 * k) * c)
+      chef.rect(0, sh - h - k * bh, sw, bh, col(0, 0, 0, ka), L + 3)
+      chef.rect(0, h + (k - 1) * bh, sw, bh, col(0, 0, 0, ka), L + 3)
+    end
+  end
+end
+-- everything drawn over the game each update: the Mech HUD, the death effect, the knockdown daze (and the sprint
+-- tilt's lean: not a drawing, it only needs this once-per-update call)
 function HUD.overlays(dt)
   HUD.read()
   HUD.draw()
+  HUD.death()
 end
 
 local function draw_panel(dt)
@@ -4309,6 +4473,7 @@ function M.render()
 end
 
 function M.on_stop()
+  HUD.sigma(false)
   set_on(false, true)
   if P.open then open_panel(false) end
 end
