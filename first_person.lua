@@ -145,12 +145,8 @@ local TABS = {
     { id = 'aimpos_time', label = 'Move time', min = 0, max = 1, step = 0.05, def = 0.15, unit = ' s',
       hint = 'How long the view takes to move to the aiming spot and back.' },
     { head = 'BALLISTIC SHIELD' },
-    { id = 'shield_fwd', label = 'Forward', min = -0.3, max = 0.3, step = 0.01, def = 0, unit = ' m',
-      hint = 'With the ballistic shield in your hand: moves the view forward (or back, minus), to look through its window. Eases in and out as you take it up.' },
-    { id = 'shield_up', label = 'Height', min = -0.4, max = 0.2, step = 0.01, def = 0, unit = ' m',
-      hint = 'With the shield in your hand: raises or lowers the view (about -0.06 lines it up with the window).' },
-    { id = 'shield_side', label = 'Sideways', min = -0.4, max = 0.4, step = 0.01, def = 0, unit = ' m',
-      hint = 'With the shield in your hand: left (minus) or right (about -0.08 for the window).' },
+    { id = 'shield_back', label = 'Distance behind the window', min = 0, max = 0.3, step = 0.01, def = 0.08, unit = ' m',
+      hint = 'Aiming with the ballistic shield raised, the view moves into its window by itself, whatever your other view settings. This is how far behind the window it sits: more shows more of the shield round the slot.' },
     { id = 'shield_zoom', label = 'Aim zoom with the shield', min = 0, max = 60, step = 5, def = 0, unit = ' %', zero = 'OFF',
       hint = 'With the shield in your hand: zooms in this much more while you aim, so its window fills more of the view. Adds to Extra aim zoom.' },
     { id = 'shield_near', label = 'Closest visible with the shield', min = 0, max = 0.45, step = 0.01, def = 0, unit = ' m', zero = 'OFF',
@@ -1133,7 +1129,7 @@ local function hide_guns()
         elseif p then
           if dist(p, refs.left) < 0.002 or dist(p, refs.right) < 0.002 then
             st.state, st.learn = 'held', nil
-            if it.kind == SHIELD_KIND then S.shield_t = S.t
+            if it.kind == SHIELD_KIND then S.shield_t, S.shu = S.t, it.unit
             else S.gheld = { u = it.unit, p = p, o = dist(p, refs.left) < 0.002 and refs.right or refs.left, t = S.t } end
           else
             if st.state == 'held' then st.state = nil end
@@ -2038,13 +2034,8 @@ local function target(dt)
     local e = S.aimw * S.aimw * (3 - 2 * S.aimw)   -- eased: starts and ends gently
     f, up, sd = f + e * V.aimpos_fwd, up + e * V.aimpos_up, sd + e * V.aimpos_side
   end
-  -- the ballistic shield in your hand (seen in a hand within 0.3 s): its offsets, eased over 0.25 s
+  -- the ballistic shield in your hand (seen in a hand within 0.3 s); its window view is set at the end
   S.shield = S.shield_t ~= nil and S.t - S.shield_t < 0.3 and S.act and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) or false
-  S.shw = max(0, min(1, (S.shw or 0) + (S.shield and dt or -dt) / 0.25))
-  if S.shw > 0 then
-    local e = S.shw * S.shw * (3 - 2 * S.shw)
-    f, up, sd = f + e * V.shield_fwd, up + e * V.shield_up, sd + e * V.shield_side
-  end
   local foot = not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel or S.diving or S.onback or S.getup or S.down)
   local cl = 0
   -- Walking backward: the body turned to face the camera (facing below -0.15 along the look) and moving back toward
@@ -2149,6 +2140,26 @@ local function target(dt)
   else p = { hm = hh }; S.vh = p end
   p.z, p.t, p.hh = z, S.t, hh
   S.tz = rz + z
+  -- aiming with the ballistic shield raised: the view goes into its window, whatever the other offsets. The shield
+  -- model's own 'look_hole' point is the middle of the slot (12 x 5.5 cm); the view sits Distance behind it along the
+  -- look, so the slot is always centred. Raised = the window ahead of the head and near its height. Eased 0.25 s
+  local hp = S.shield and chef.unit_alive(S.shu) and node_at(S.shu, 'look_hole')
+  if S.shield and not hp then once('nohole', 'shield: no window point (look_hole) found on it') end
+  local raised = false
+  if hp then
+    local ax, ay, az = hp[1] - hx, hp[2] - hy, hp[3] - hz
+    local ahead, side = (ax * fx + ay * fy) / hl, (ax * fy - ay * fx) / hl
+    raised = aiming and ahead > 0.05 and ahead < 0.8 and abs(az) < 0.25
+    S.shr = { hp[1] - rx, hp[2] - ry, hp[3] - rz }  -- from the root, so an ease out follows the body
+  end
+  if raised ~= (S.shup or false) then S.shup = raised; log('shield window view: %s', raised and 'on' or 'off') end
+  S.shw = max(0, min(1, (S.shw or 0) + (raised and dt or -dt) / 0.25))
+  if S.shw > 0 and S.shr then
+    local e, d = S.shw * S.shw * (3 - 2 * S.shw), V.shield_back
+    local wx, wy, wz = rx + S.shr[1] - fx * d, ry + S.shr[2] - fy * d, rz + S.shr[3] - fz * d
+    S.tx, S.ty, S.tz = S.tx + (wx - S.tx) * e, S.ty + (wy - S.ty) * e, S.tz + (wz - S.tz) * e
+    S.she = { e, wx, wy, wz, fx * d, fy * d, fz * d }  -- the draw pass re-aims it at where the slot is by then
+  else S.she = nil end
   S.trx, S.try, S.trz = rx, ry, rz  -- the root this view was built from (the draw pass moves it along)
   S.thx, S.thy, S.thz = hx, hy, hz
 end
@@ -3045,6 +3056,7 @@ local function place(w)
           end
           -- Cut the cockpit (MECHS tab): a mech's own near range clears its frame and arm housing from the view
           local nr = S.mech and V[S.mech_pre .. 'mech_clip'] > 0 and V[S.mech_pre .. 'mech_clip']
+            or (S.shw or 0) > 0 and 0.02  -- in the shield's window: close enough to keep the slot's frame drawn
             or S.shield and V.shield_near > 0 and V.shield_near or V.near
           if nr > 0 then
             k.near0 = k.near0 or call('Camera.near_range', cam)
@@ -4496,6 +4508,14 @@ local function render_step()
     end
     S.tx, S.ty, S.tz = S.tx + dx, S.ty + dy, S.tz + dz
     S.trx, S.try, S.trz = x, y, z
+    -- the arm swings the shield on after update too (turning): the window view goes to where the slot is now, or the
+    -- slot slid across the view and caught up a frame later (user 2026-11-11: 'the shield noticeably lags')
+    local se = S.she
+    local hp = se and chef.unit_alive(S.shu) and node_at(S.shu, 'look_hole')
+    if hp then
+      local mx, my, mz = hp[1] - se[5] - se[2] - dx, hp[2] - se[6] - se[3] - dy, hp[3] - se[7] - se[4] - dz
+      S.tx, S.ty, S.tz = S.tx + mx * se[1], S.ty + my * se[1], S.tz + mz * se[1]
+    end
   end
   place(w)
   S.draw = nil
