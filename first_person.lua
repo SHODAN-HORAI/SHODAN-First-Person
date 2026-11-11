@@ -1139,7 +1139,8 @@ local function hide_guns()
             if not ok and st.state == 'stowed' then st.state, st.learn = nil, nil end
           end
           if st.state then
-            local on = V['hide_' .. st.state .. '_' .. g[1]]
+            -- the FRV driver keeps the held gun in the right hand on the wheel, where it clips: hidden while driving
+            local on = V['hide_' .. st.state .. '_' .. g[1]] or (st.state == 'held' and S.frv == 'driver')
             carried[#carried + 1] = { p = p, on = on }
             if on then want[it.unit] = g[2] end
           else parts[#parts + 1] = { u = it.unit, p = p, list = g[2] } end  -- a scope or sight that is its own unit
