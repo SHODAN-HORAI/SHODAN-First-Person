@@ -525,6 +525,7 @@ local function anim(u, all)
   local has, why = call('Unit.has_animation_state_machine', u)
   if has == false then
     if S.head and u == S.head.u and not S.dead and chef.in_mission() then S.dead = true; log('the body has no animation left (dead): game camera') end
+    if S.head and u == S.head.u and S.dead then S.dsure = true end
     return nil
   end
   -- the check itself refused: still never ask a body that's down
@@ -1786,17 +1787,16 @@ local function corpse(it)
   local dead = S.adead
   if not dead then dead = {}; S.adead = dead end
   local d = dead[it.unit]
-  if d and d.kind == it.kind and S.t < d.till then return true end
+  if d and d.kind == it.kind and S.t < d.till then return d.dead end
   local has = call('Unit.has_animation_state_machine', it.unit)
   if has == nil then return false end  -- the call failed: no verdict
   local seen = S.asm
   if not seen then seen = {}; S.asm = seen end
-  if has == true then seen[it.unit] = it.kind or true; return false end
-  local is = seen[it.unit] == (it.kind or true) or CHAR_KINDS[it.kind] == true
-  if is then
-    if not d then d = {}; dead[it.unit] = d end
-    d.kind, d.till = it.kind, S.t + 1
-  end
+  if has == true then seen[it.unit] = it.kind or true end
+  local is = has == false and (seen[it.unit] == (it.kind or true) or CHAR_KINDS[it.kind] == true)
+  -- the answer kept a while (a crowd in the cone costs one call each, not one each frame): dead 1 s, alive 0.5 s
+  if not d then d = {}; dead[it.unit] = d end
+  d.kind, d.dead, d.till = it.kind, is, S.t + (is and 1 or 0.5)
   return is
 end
 
@@ -2340,10 +2340,16 @@ local function game_view_far(x, y, z)
         far = far or (cx - x) ^ 2 + (cy - y) ^ 2 + (cz - z) ^ 2 > 3.5 ^ 2
       end
       -- a menu with a character preview (armory, Warbonds, Superstore) shows through a narrow camera, near the head
-      -- or not: the game's own field of view under 48 deg counts as away (never the one we wrote)
+      -- or not: the game's own field of view under 48 deg, and clearly narrower (under 0.9x) than the widest the game
+      -- has used on this ship, counts as away (never the one we wrote). The second test keeps a player whose own
+      -- field of view setting is under 48 deg from being 'away' all the time
       local fv = cam and call('Camera.vertical_fov', cam)
-      if finite(fv) and fv > 0 and fv < math.rad(48) and not (k.fvw and abs(fv - k.fvw) < 1e-4) then
-        known, far = true, true
+      if finite(fv) and fv > 0 and not (k.fvw and abs(fv - k.fvw) < 1e-4) then
+        -- the reference: the game's own field of view before we wrote ours (k.fov0), or the widest seen; with neither
+        -- yet, the 48 deg rule alone
+        local ref = max(S.shipfov or 0, finite(k.fov0) and k.fov0 or 0)
+        if fv < math.rad(48) and (ref == 0 or fv < 0.9 * ref) then known, far = true, true end
+        S.shipfov = max(S.shipfov or 0, fv)
       end
     end
   end
@@ -2819,10 +2825,14 @@ local function death_check()
     for _, it in ipairs(cam_watch.items) do set[it.unit] = true; if S.dcams and not S.dcams[it.unit] then changed = true end end
     for u in pairs(S.dcams or {}) do if not set[u] then changed = true end end
     S.dcams = set
-    if changed and lying and not S.dead then S.dead = true; log('cameras changed while lying (%s): game camera until up', S.stance or '?') end
+    if changed and lying and not S.dead then
+      S.dead, S.dsure = true, (S.down or S.dive) and true or false
+      log('cameras changed while lying (%s): game camera until up', S.stance or '?')
+    end
   end
   local h = S.head
   if S.dead and h and h.u ~= S.corpse and not lying and not S.pod then S.dead = false; log('up: first person again') end
+  if not S.dead then S.dsure = nil end
 end
 
 -- give the camera and every hidden mesh back to the game and start again as in a new world: the next frame picks
@@ -2830,8 +2840,16 @@ end
 -- what to come back as: on or off as it was once first person was decided this world (started, or switched on); before
 -- that nil, so Start in first person still decides
 local function keep_as() if S.on or S.started then return S.on end end
+-- what a reset carries into its restart in the same world: a death (so a corpse is never taken as your Helldiver),
+-- the last drop, and, for an error recovery only, which Helldiver is yours (the
+-- reset key is for a wrong pick, so it forgets that)
+local function carry(keep_mine)
+  S.carry = { w = chef.world_id(), dead = S.dead, dsure = S.dsure, drop_t = S.drop_t,
+    corpse = S.corpse or (S.dead and S.head and S.head.u) or nil, mine = keep_mine and S.mine or nil }
+end
 local function reset_camera(why)
   local was = keep_as()
+  carry(false)
   set_on(false, true)
   S.world, S.keep, S.keep_w = nil, was, chef.world_id()
   log('camera reset (%s)', why)
@@ -2859,7 +2877,8 @@ local function pad_step()
   end
   if active and not PADT.was then PADT.t0, PADT.fired = S.t, false end
   if active and not PADT.fired and S.t - PADT.t0 >= 1 then
-    PADT.fired = true; reset_camera('controller hold'); say('CAMERA RESET')
+    -- at the start of the next step, as the key's: here the rest of this frame would run on the old camera list
+    PADT.fired = true; S.reset_req = 'controller hold'
   end
   if not active and PADT.was and not PADT.fired then set_on(not S.on); say(S.on and 'FIRST PERSON ON' or 'FIRST PERSON OFF') end
   PADT.was = active
@@ -2867,6 +2886,7 @@ end
 
 local function step(dt)
   local busy = P.capture ~= nil
+  if S.reset_req then reset_camera(S.reset_req); S.reset_req = nil; say('CAMERA RESET') end
   if not busy and binds.reset_key and binds.reset_key.pressed() then reset_camera('reset key'); say('CAMERA RESET') end
   if not busy and binds.panel and binds.panel.pressed() then open_panel(not P.open) end
   if P.open then panel_keys(dt) end
@@ -2895,6 +2915,12 @@ local function step(dt)
     S.mech, S.frv, S.empl, S.tank, S.tpass = false, false, false, false, false
     S.dead, S.corpse, S.avs, S.av_gen, S.dgen, S.dcams = false, nil, nil, nil, nil, nil
     S.mine, S.drop_t, S.fall_t, S.lcz, S.fall_max, S.avtop, S.avfollow = nil, nil, 0, nil, 0, {}, {}
+    S.dsure, S.shipfov = nil, nil
+    local c = S.carry
+    if c and c.w == S.world then
+      S.dead, S.dsure, S.drop_t, S.corpse, S.mine = c.dead, c.dsure, c.drop_t, c.corpse, c.mine
+    end
+    S.carry = nil
   end
   S.t, S.fno = S.t + dt, (S.fno or 0) + 1
   -- the game camera falling 12+ m/s for 0.25 s = a hellpod coming down (a single-frame jump is a camera cut)
@@ -2955,7 +2981,11 @@ local function step(dt)
     S.tank_on = sit and (S.tank_on or 0) + 1 or 0
     S.tank_off = sit and 0 or (S.tank_off or 0) + 1
     if sit and (S.tank or S.tank_on >= 2) then
-      S.tank = { seat = tank_seat(tk), tp = TANKS[tk.kind].tp, id = TANKS[tk.kind].id, u = tk.unit, still = settled(tk) }
+      -- settled once = settled while you stay in it (driving up a slope restarts settled()'s clock every 0.5 m of
+      -- height, which flipped the offsets between the hull and the look)
+      local was = S.tank and S.tank.u == tk.unit and S.tank.still
+      S.tank = { seat = tank_seat(tk), tp = TANKS[tk.kind].tp, id = TANKS[tk.kind].id, u = tk.unit,
+        still = was or settled(tk) }
     elseif S.tank and S.tank_off >= 2 then
       S.tank, S.tseat = false, nil; log('out of the tank')
     end
@@ -3013,7 +3043,11 @@ local function step(dt)
     if V.aim_zoom_game and S.gfov and S.ghip and S.ghip > 1 then zoom = max(0.15, min(1.2, S.gfov / S.ghip)) end
     zoom = zoom * (1 - V.aim_zoom / 100)
   end
-  local want = (S.act or S.bw > 0) and (S.aim and V.aim_fov > 0 and V.aim_fov or (vf > 0 and vf or V.fov) * zoom) or vf
+  -- Field of view at GAME: nothing written, except while aiming with a zoom of our own (Extra aim zoom, or not
+  -- following the game's): then from the game's hip field of view
+  local base = vf > 0 and vf or V.fov > 0 and V.fov
+    or (S.act and S.aim and (V.aim_zoom > 0 or not V.aim_zoom_game) and S.ghip) or 0
+  local want = (S.act or S.bw > 0) and (S.aim and V.aim_fov > 0 and V.aim_fov or base * zoom) or vf
   if want > 0 then S.fv = S.fv and S.fv + (want - S.fv) * (1 - exp(-dt * 14)) or want else S.fv = nil end
   hide_guns()
   place(w)
@@ -3068,7 +3102,16 @@ local function recover(hook, err)
   S.draw, REC.live = nil, false
   local was = keep_as()
   if P.open then pcall(open_panel, false) end
-  pcall(set_on, false, true)
+  pcall(carry, true)
+  if not pcall(set_on, false, true) then
+    -- the hand-back itself raised: each part on its own, before the restart forgets the cameras and the hidden lists
+    pcall(hand_back)
+    for u, names in pairs(S.hidden or {}) do
+      for nm in pairs(names) do pcall(call, 'Unit.set_mesh_visibility', u, nm, true, 'default') end
+    end
+    S.hidden = {}
+    pcall(show_guns)
+  end
   S.world = nil
   if S.keep == nil then S.keep, S.keep_w = was, chef.world_id() end
   if REC.n >= REC_STOP then
