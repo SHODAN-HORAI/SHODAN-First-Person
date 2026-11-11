@@ -358,6 +358,16 @@ local TABS = {
       hint = 'Extra height in a mech (third person in a mech must be off).' },
     { id = 'mech_side', label = 'Sideways', min = -0.6, max = 0.6, step = 0.01, def = 0, unit = ' m',
       hint = 'Move the view left (minus) or right in a mech (third person in it must be off).' },
+    { id = 'mech_view', label = 'View', min = 1, max = 2, step = 1, def = 1, names = { 'COCKPIT', 'GUN LINE' },
+      hint = 'First person in a mech: COCKPIT = at your head; GUN LINE = on the line the mech aims along, so the crosshair is exact.' },
+    { id = 'mech_dist', label = 'Line up at', min = 0, max = 300, step = 5, def = 50, unit = ' m', zero = 'OFF',
+      hint = 'COCKPIT view: the view turns so the crosshair meets the shots this far away (the mech camera sits far behind you). OFF = the game look.' },
+    { id = 'mech_near', label = 'Nearest enemy distance', min = 0, max = 100, step = 1, def = 25, unit = ' m',
+      hint = 'With Correct for enemies (AIM tab): an enemy nearer than this lines up here instead, so the view is not thrown about up close.' },
+    { id = 'mech_glide', label = 'Glide to a new distance', min = 0, max = 5, step = 0.5, def = 2, unit = ' s', zero = 'QUICK',
+      hint = 'COCKPIT view: a new enemy distance is reached over this long, eased in and out. QUICK = a quarter second.' },
+    { id = 'mech_wide', label = 'Keep the widest field of view', toggle = true, def = true,
+      hint = 'The game narrows the view while the mech aims. On = first person keeps the widest seen in this mech (Field of view at SAME and GAME).' },
     { head = 'EMPLACEMENT' },
     { id = 'empl_pick', global = true, label = 'Emplacement to edit', min = 1, max = #EMPLS, step = 1, def = 1,
       hint = 'Pick the emplacement the rows below change. Each one keeps its own settings.' },
@@ -2244,6 +2254,77 @@ local function restore(k, cam)
 end
 
 -- the Pelican seat: the view looks the seat's way plus the mouse's turn (the game's outside shot doesn't follow it)
+-- first person in a mech (MECHS tab). The game's mech camera sits far behind and shoots along its own line; worked in
+-- the camera's own frame (the mech's when the camera is linked to it, the world's otherwise), so the same numbers hold
+-- either way. mech_line: the game's line this frame, and with GUN LINE the spot on it nearest your head (the mech's
+-- Forward along the line itself so the aim stays exact, Height plus 12 cm: 5 cm clipped
+-- into the shoulder walking uphill). mech_look: COCKPIT turns the view so the crosshair meets the line at Line up at
+-- (an enemy's range with Correct for enemies, never nearer than Nearest enemy distance, glided in 1/distance).
+local MECH = { k = {}, g = {} }
+function MECH.line(k, cam, state, hx, hy, hz, mx, my, mz, mfx, mfy)
+  local base = game_rot(k, cam)
+  local fx, fy, fz = xyz(base and call('Quaternion.forward', base))
+  if not fx then return end
+  local gx, gy, gz = k.gp[1], k.gp[2], k.gp[3]
+  if state == 'mech' then
+    local dx, dy = hx - mx, hy - my
+    hx, hy, hz = dx * mfy - dy * mfx, dx * mfx + dy * mfy, hz - mz
+  end
+  local p, MK = S.mech_pre, MECH.k
+  MK.base, MK.fx, MK.fy, MK.fz, MK.gx, MK.gy, MK.gz = base, fx, fy, fz, gx, gy, gz
+  MK.gun = V[p .. 'mech_view'] == 2
+  if MK.gun then
+    local t = (hx - gx) * fx + (hy - gy) * fy + (hz - gz) * fz + V[p .. 'mech_fwd']
+    MK.qx, MK.qy, MK.qz = gx + fx * t, gy + fy * t, gz + fz * t + V[p .. 'mech_up'] + 0.12
+  end
+  return MK
+end
+function MECH.look(k, cam, dt, state, mx, my, mz, mfx, mfy)
+  local m, p, MG = MECH.k, S.mech_pre, MECH.g
+  local D0 = V[p .. 'mech_dist']
+  if m.gun or D0 <= 0 then
+    -- the game's own look: put back once if we turned it
+    if k.last then call('Camera.set_local_rotation', cam, k.u, m.base); k.last = nil end
+    S.md, S.mg = nil, nil
+    return
+  end
+  local fx, fy, fz = m.fx, m.fy, m.fz
+  local Dr
+  if V.aim_range then
+    -- the enemy list is in the world: the line taken there
+    local gx, gy, gz, wx, wy = m.gx, m.gy, m.gz, fx, fy
+    if state == 'mech' then
+      gx, gy, gz = mx + m.gx * mfy + m.gy * mfx, my - m.gx * mfx + m.gy * mfy, mz + m.gz
+      wx, wy = fx * mfy + fy * mfx, -fx * mfx + fy * mfy
+    end
+    MG[1], MG[2], MG[3] = gx, gy, gz
+    local raw, _, u = aim_range(MG, wx, wy, fz)
+    Dr = held_range(raw, u)
+    if Dr then Dr = max(Dr, V[p .. 'mech_near']) end
+  end
+  local want, gl = Dr or D0, V[p .. 'mech_glide']
+  local cur = S.md or want
+  if gl > 0 then
+    local G = S.mg
+    if not G or abs(want - G.to) > G.to * 0.15 then G = { from = cur, to = want, t0 = S.t }; S.mg = G else G.to = want end
+    local s = min(1, (S.t - G.t0) / gl)
+    s = s * s * (3 - 2 * s)
+    cur = 1 / ((1 - s) / max(1, G.from) + s / max(1, G.to))
+  else
+    S.mg = nil
+    cur = 1 / (1 / cur + (1 / want - 1 / cur) * (1 - exp(-dt / 0.25)))
+  end
+  S.md = cur
+  local vx, vy, vz = m.gx + fx * cur - k.wx, m.gy + fy * cur - k.wy, m.gz + fz * cur - k.wz
+  local l = sqrt(vx * vx + vy * vy + vz * vz)
+  if l < 0.5 then return end
+  vx, vy, vz = vx / l, vy / l, vz / l
+  local nq = call('Quaternion.look', Vec(vx, vy, vz), Vec(0, 0, 1))
+  local _, err = call('Camera.set_local_rotation', cam, k.u, nq)
+  if err then once('mw' .. tostring(err), 'mech: rotation write refused: %s', tostring(err)); return end
+  wrote(k, nq)
+end
+
 local function pel_look(k, cam)
   local d = S.pel_dir
   if not d then return end
@@ -2369,6 +2450,9 @@ local function place(w)
         local dx, dy = px - mx, py - my
         px, py, pz = dx * mfy - dy * mfx, dx * mfx + dy * mfy, pz - mz
       end
+      -- first person in a mech: the game's line; GUN LINE puts the view on it
+      local mk = S.mech and k.main and k.gp and MECH.line(k, cam, state, hx, hy, hz, mx, my, mz, mfx, mfy)
+      if mk and mk.gun then px, py, pz = mk.qx, mk.qy, mk.qz end
       if not (finite(px) and finite(py) and finite(pz)) then
         -- never written: smoothing starts over from the head (one bad value in it would stay there for good). Only
         -- this camera's write is skipped: the other cameras and the scope hand-off below still run
@@ -2391,7 +2475,8 @@ local function place(w)
         if why then once('w' .. tostring(why), 'camera write refused: %s', tostring(why))
         else
           if S.pel_seat and state == 'ours' then pel_look(k, cam)
-          elseif k.main and state == 'ours' then
+          elseif mk then MECH.look(k, cam, S.dt or 0.016, state, mx, my, mz, mfx, mfy)
+          elseif k.main and state == 'ours' and not S.mech then
             pitch_limit(k, cam, S.dt or 0.016)
             if not k.qw then view_limit(k, cam, S.dt or 0.016) end
             if not (k.qw or k.yq) then k.qlog = nil; aim_fix(k, cam, S.dt or 0.016) end
@@ -2735,6 +2820,7 @@ local function value_text(r)
   if r.toggle then return v and 'ON' or 'OFF' end
   if v == 0 and r.zero then return r.zero end
   if PICKS[r.id] then local m = PICKS[r.id].models; return (m[v] or m[1]).name end
+  if r.names then return r.names[v] or tostring(v) end
   local d = r.step < 1 and 2 or 0
   return string.format('%.' .. d .. 'f', v) .. (r.unit or '')
 end
@@ -3372,7 +3458,11 @@ local function step(dt)
     end
   end
   neck(w)
-  local vf = S.frv and V[S.frv_pre .. 'frv_fov'] or S.tpass and V[S.tpass .. '_fov'] or S.mech and V[S.mech_pre .. 'mech_fov']
+  -- in a mech the game narrows its view as the mech aims: first person keeps the widest seen in this mech
+  if S.mech and S.act and S.gfov then S.mwide = max(S.mwide or S.gfov, S.gfov) elseif not S.mech then S.mwide, S.md, S.mg = nil, nil, nil end
+  local mfv = S.mech and V[S.mech_pre .. 'mech_fov']
+  if mfv == 0 and V.fov == 0 and S.act and V[S.mech_pre .. 'mech_wide'] and S.mwide then mfv = S.mwide end
+  local vf = S.frv and V[S.frv_pre .. 'frv_fov'] or S.tpass and V[S.tpass .. '_fov'] or S.mech and mfv
     or S.empl and V[S.empl_pre .. 'empl_fov'] or S.tank and 0
     or (S.act or S.bw > 0) and (S.stance == 'crouch' and V.crouch_fov or S.stance == 'prone' and V.prone_fov) or 0  -- stance: first person only (and its glide out)
   -- the game's hip field of view (a slow average while not aiming): how much the game zooms for the weapon in hand is
@@ -3386,7 +3476,8 @@ local function step(dt)
   -- to ours, so a wide view zooms as much as the game's does (a share of the angle zoomed a 100 deg view far more).
   -- Extra aim zoom then narrows the angle by its percentage
   local mag, extra = 1, 1
-  if S.act and S.aim and V.aim_fov == 0 then
+  -- (not in a mech keeping its widest view: the game's narrowing there is the mech aiming, not a zoom to follow)
+  if S.act and S.aim and V.aim_fov == 0 and not (S.mech and V[S.mech_pre .. 'mech_wide']) then
     if V.aim_zoom_game and S.gfov and S.ghip and S.ghip > 1 then
       mag = max(0.15, min(1.2, math.tan(math.rad(S.gfov) / 2) / math.tan(math.rad(S.ghip) / 2)))
     end
