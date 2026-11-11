@@ -1069,7 +1069,7 @@ local function scan_done(near)
   if not c then return end
   local best, bd = nil, 6
   -- ship: your Helldiver (S.mine) while it's there, never a teammate's (nothing on the ship gives you a new one)
-  local gate = others_here() and not drop_seen() and not (S.repick and S.t < S.repick)
+  local gate = others_here() and not drop_seen() and not (S.repick and not S.dead)
     or not chef.in_mission() and S.mine ~= nil and chef.unit_alive(S.mine)
   -- right after your drop: your Helldiver is the one that came down with the pod (30+ m below its highest point;
   -- it exists from the mission load, 2026-11-07 log), so a teammate standing where you land is never taken. None
@@ -2108,10 +2108,10 @@ local function place(w)
   if not (S.head and S.tx) then return end
   local hx, hy, hz = upos(S.head.u, S.head.node)
   -- a frame whose position isn't a number: the last good head, so first person holds
-  if not hx and bad_now(S.head.u) and S.ph then hx, hy, hz = S.ph[1], S.ph[2], S.ph[3] end
+  if not hx and bad_now(S.head.u) and S.ph and S.ph.u == S.head.u then hx, hy, hz = S.ph[1], S.ph[2], S.ph[3] end
   if not hx then return end
   local ph = S.ph or {}
-  ph[1], ph[2], ph[3], S.ph = hx, hy, hz, ph
+  ph[1], ph[2], ph[3], ph.u, S.ph = hx, hy, hz, S.head.u, ph
   local scoped = false
   -- in a mech the game's camera sits in the mech's own frame (x right, y forward, z up from its root)
   local mx, my, mz, mfx, mfy
@@ -2175,7 +2175,7 @@ local function place(w)
     -- any hand-off (scope, far, back): the game shows the helmet again a few frames later, re-hide every frame for 1 s
     if state ~= k.state then k.state = state; S.rehide = S.t + 1; log('camera %d (slot %d): %s', ci, k.slot, state) end
     if state == 'scope' then scoped = true end
-      if state ~= 'ours' and state ~= 'mech' then
+    if state ~= 'ours' and state ~= 'mech' then
       if k.wx then restore(k, cam) end
       -- not the game's view camera: put back where the game keeps it, so our view never stays in it
       if k.wx and cam and not k.main and k.home then
@@ -2191,43 +2191,44 @@ local function place(w)
         px, py, pz = dx * mfy - dy * mfx, dx * mfx + dy * mfy, pz - mz
       end
       if not (finite(px) and finite(py) and finite(pz)) then
-        -- never written: smoothing starts over from the head (one bad value in it would stay there for good)
+        -- never written: smoothing starts over from the head (one bad value in it would stay there for good). Only
+        -- this camera's write is skipped: the other cameras and the scope hand-off below still run
         S.sm = nil
         once('badwrite', 'a camera position came out not a number: not written')
-        return
-      end
-      -- gliding: between the game's own spot this frame and first person, eased
-      local e = 1
-      if S.bw < 1 and k.gp then
-        e = S.bw * S.bw * (3 - 2 * S.bw)
-        px, py, pz = k.gp[1] + (px - k.gp[1]) * e, k.gp[2] + (py - k.gp[2]) * e, k.gp[3] + (pz - k.gp[3]) * e
-      end
-      k.wx, k.wy, k.wz = px, py, pz
-      -- the game's own field of view this frame (the aim zoom follows it): any value but the one we wrote last
-      if k.main then
-        local cur = call('Camera.vertical_fov', cam)
-        if type(cur) == 'number' and cur > 0.05 and cur < 3 and not (k.fvw and abs(cur - k.fvw) < 1e-4) then S.gfov = math.deg(cur) end
-      end
-      local _, why = call('Camera.set_local_position', cam, k.u, Vec(px, py, pz))
-      if why then once('w' .. tostring(why), 'camera write refused: %s', tostring(why))
       else
-        if k.main and state == 'ours' then
-          pitch_limit(k, cam, S.dt or 0.016)
-          if not k.qw then view_limit(k, cam, S.dt or 0.016) end
-          if not (k.qw or k.yq) then k.qlog = nil; aim_fix(k, cam, S.dt or 0.016) end
+        -- gliding: between the game's own spot this frame and first person, eased
+        local e = 1
+        if S.bw < 1 and k.gp then
+          e = S.bw * S.bw * (3 - 2 * S.bw)
+          px, py, pz = k.gp[1] + (px - k.gp[1]) * e, k.gp[2] + (py - k.gp[2]) * e, k.gp[3] + (pz - k.gp[3]) * e
         end
-        local nr = V.near
-        if nr > 0 then
-          k.near0 = k.near0 or call('Camera.near_range', cam)
-          call('Camera.set_near_range', cam, nr)
-        elseif k.near0 then call('Camera.set_near_range', cam, k.near0); k.near0 = nil end
-        if S.fv then
-          k.fov0 = k.fov0 or call('Camera.vertical_fov', cam)
-          k.fvw = math.rad(S.fv)
-          if e < 1 and type(k.fov0) == 'number' then k.fvw = k.fov0 + (k.fvw - k.fov0) * e end
-          call('Camera.set_vertical_fov', cam, k.fvw)
-        elseif k.fov0 then call('Camera.set_vertical_fov', cam, k.fov0); k.fov0, k.fvw = nil, nil end
-        call('World.update_unit', w, k.u)
+        k.wx, k.wy, k.wz = px, py, pz
+        -- the game's own field of view this frame (the aim zoom follows it): any value but the one we wrote last
+        if k.main then
+          local cur = call('Camera.vertical_fov', cam)
+          if type(cur) == 'number' and cur > 0.05 and cur < 3 and not (k.fvw and abs(cur - k.fvw) < 1e-4) then S.gfov = math.deg(cur) end
+        end
+        local _, why = call('Camera.set_local_position', cam, k.u, Vec(px, py, pz))
+        if why then once('w' .. tostring(why), 'camera write refused: %s', tostring(why))
+        else
+          if k.main and state == 'ours' then
+            pitch_limit(k, cam, S.dt or 0.016)
+            if not k.qw then view_limit(k, cam, S.dt or 0.016) end
+            if not (k.qw or k.yq) then k.qlog = nil; aim_fix(k, cam, S.dt or 0.016) end
+          end
+          local nr = V.near
+          if nr > 0 then
+            k.near0 = k.near0 or call('Camera.near_range', cam)
+            call('Camera.set_near_range', cam, nr)
+          elseif k.near0 then call('Camera.set_near_range', cam, k.near0); k.near0 = nil end
+          if S.fv then
+            k.fov0 = k.fov0 or call('Camera.vertical_fov', cam)
+            k.fvw = math.rad(S.fv)
+            if e < 1 and type(k.fov0) == 'number' then k.fvw = k.fov0 + (k.fvw - k.fov0) * e end
+            call('Camera.set_vertical_fov', cam, k.fvw)
+          elseif k.fov0 then call('Camera.set_vertical_fov', cam, k.fov0); k.fov0, k.fvw = nil, nil end
+          call('World.update_unit', w, k.u)
+        end
       end
     end
   end
@@ -2854,13 +2855,15 @@ local function carry(keep_mine)
   -- 'corpse' never picked again. The reset key's restart may pick once whatever the multiplayer gate says, as after
   -- a drop: it forgot which Helldiver is yours
   local sure = S.dead and S.dsure or false
-  -- (dead, no repick: the spectator camera follows a teammate, and the reinforcement's drop allows the pick)
+  -- (sure dead, no repick: the spectator camera follows a teammate, and the reinforcement's drop allows the pick)
   S.carry = { w = chef.world_id(), dead = sure, dsure = sure or nil, drop_t = S.drop_t,
     corpse = S.corpse or (sure and S.head and S.head.u) or nil, mine = keep_mine and S.mine or nil,
-    repick = not keep_mine and not S.dead }
+    repick = not keep_mine and not sure }
 end
 local function reset_camera(why)
   local was = keep_as()
+  -- a second reset before the re-pick: the first one's on/off (first person is off and not started meanwhile)
+  if S.keep ~= nil and S.keep_w == chef.world_id() then was = S.keep end
   carry(false)
   set_on(false, true)
   S.world, S.keep, S.keep_w = nil, was, chef.world_id()
@@ -2927,18 +2930,21 @@ local function step(dt)
     S.mech, S.frv, S.empl, S.tank, S.tpass = false, false, false, false, false
     S.dead, S.corpse, S.avs, S.av_gen, S.dgen, S.dcams = false, nil, nil, nil, nil, nil
     S.mine, S.drop_t, S.fall_t, S.lcz, S.fall_max, S.avtop, S.avfollow = nil, nil, 0, nil, 0, {}, {}
+    S.drop_held = nil
     S.dsure, S.shipfov = nil, nil
     local c = S.carry
     if c and c.w == S.world then
       S.dead, S.dsure, S.drop_t, S.corpse, S.mine = c.dead, c.dsure, c.drop_t, c.corpse, c.mine
-      S.repick = c.repick and S.t + 5 or nil  -- the repick: 5 s (the camera is behind you now)
+      -- the repick: until your Helldiver is picked, or a death (the spectator camera then follows a teammate)
+      S.repick = c.repick or nil
     else
       S.repick = nil
     end
     S.carry = nil
   end
   S.t, S.fno = S.t + dt, (S.fno or 0) + 1
-  -- the game camera falling 12+ m/s for 0.25 s = a hellpod coming down (a single-frame jump is a camera cut)
+  -- the game camera falling 25+ m/s for 0.25 s = a hellpod coming down (a single-frame jump is a camera cut; 12+ m/s
+  -- is kept for the camera following a body down)
   local gc = chef.camera()
   if gc and S.lcz and dt > 0 and dt < 0.1 then
     local vz = (gc.z - S.lcz) / dt
@@ -2947,8 +2953,11 @@ local function step(dt)
     S.pfall_t = (vz < -25 and vz > -150) and (S.pfall_t or 0) + dt or 0
     S.calm_t = vz > -12 and (S.calm_t or 0) + dt or 0
     -- (12 m/s was also a 15 m ledge, yours or a spectated teammate's: it opened the multiplayer pick for 30 s)
-    if S.pfall_t >= 0.25 and not drop_seen() then
-      S.drop_t = S.t
+    -- one drop per fall: your Helldiver picked mid-fall clears drop_t, and the same fall must not set it again (the
+    -- pick would stay open 30 s more and take the Helldiver nearest the camera at the next rescan)
+    if S.calm_t >= 0.5 then S.drop_held = nil end
+    if S.pfall_t >= 0.25 and not drop_seen() and not S.drop_held then
+      S.drop_t, S.drop_held = S.t, true
       if others_here() then log('hellpod drop seen (game camera falling %.0f m/s)', -vz) end
     end
   elseif not gc then
@@ -3070,7 +3079,13 @@ local function step(dt)
     or (S.act and S.aim and (V.aim_zoom > 0 or not V.aim_zoom_game) and S.ghip) or 0
   if mag ~= 1 and base > 0 then base = 2 * math.deg(math.atan(math.tan(math.rad(base) / 2) * mag)) end
   local want = (S.act or S.bw > 0) and (S.aim and V.aim_fov > 0 and V.aim_fov or base * extra) or vf
-  if want > 0 then S.fv = S.fv and S.fv + (want - S.fv) * (1 - exp(-dt * 14)) or want else S.fv = nil end
+  if want > 0 then S.fv = S.fv and S.fv + (want - S.fv) * (1 - exp(-dt * 14)) or want
+  elseif S.fv and S.act and S.gfov then
+    -- nothing of ours to write any more (Field of view at GAME, aim let go): back out to the game's own, eased as the
+    -- zoom came in, then handed back
+    S.fv = S.fv + (S.gfov - S.fv) * (1 - exp(-dt * 14))
+    if abs(S.fv - S.gfov) < 0.3 then S.fv = nil end
+  else S.fv = nil end
   hide_guns()
   place(w)
   if P.open then draw_panel(dt) end
