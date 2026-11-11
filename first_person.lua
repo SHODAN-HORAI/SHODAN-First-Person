@@ -470,8 +470,9 @@ local S = { on = false, cams = {}, head = nil, look = 0, bw = 0, shown = false, 
 local nodes_n, nodes_t = {}, nil
 local function finite(n) return type(n) == 'number' and n == n and n > -math.huge and n < math.huge end
 -- a position that isn't a number (NaN or infinite: a body mid-teardown, a bad frame) is never used: upos gives nil
--- and marks the unit for this frame (bad_now), so the head is kept and first person holds where it was this frame
-local function bad_now(u) return S.badpos == S.fno and S.badu == u end
+-- and marks the unit for this frame (bad_now), so the head is kept and first person holds where it was this frame.
+-- For 1 s at most: a body that stays NaN (stuck mid-teardown) is then let go like a gone one
+local function bad_now(u) local b = S.bad and S.bad[u]; return b ~= nil and b.f == S.fno and S.t - b.t0 < 1 end
 local function upos(u, i)
   if i and i ~= 1 then
     if nodes_t ~= S.t then nodes_n, nodes_t = {}, S.t end
@@ -484,7 +485,10 @@ local function upos(u, i)
   end
   local x, y, z = chef.unit_position(u, i)
   if x ~= nil and not (finite(x) and finite(y) and finite(z)) then
-    S.badpos, S.badu = S.fno, u
+    S.bad = S.bad or {}
+    local b = S.bad[u]
+    if not b or b.f < S.fno - 1 then b = { t0 = S.t }; S.bad[u] = b end  -- a new run of NaN frames
+    b.f = S.fno
     if not S.said.badpos then S.said.badpos = true; log('a position came back not a number: that frame is skipped') end
     return nil
   end
@@ -1674,7 +1678,7 @@ local function target(dt)
   -- a tank passenger seat or an FRV's driver or passenger seat: the seat's own Forward and Sideways go along the
   -- vehicle (its facing), so looking round turns the view in place instead of swinging it round the seat. The eye's
   -- offsets still follow the look; the gun turns with your aim, so the gunner seat stays with the look.
-  local vu = S.tpass and S.tank and S.tank.u or (S.frv == 'driver' or S.frv == 'passenger') and S.frv_u or nil
+  local vu = S.tpass and S.tank and S.tank.still and S.tank.u or (S.frv == 'driver' or S.frv == 'passenger') and S.frv_u or nil
   local vf, vs, vx, vy = 0, 0, 0, 1
   if vu and seat then
     local a, b = chef.unit_rotation(vu)
@@ -1776,13 +1780,24 @@ for kd in (
   '33b3e0ce8d179eec c28b3482e73d1ea9 d7e2c78b1ef4a8e1 b940c889d77f8219 db964631be1cf501 72a83e49ced6db3d ' ..
   '5b968cd78f8bc7a0 ef04cb84d097a497 f79cd8bb654397df a35207c6f2150806 1baeef36a88ae579 a1f37bf2a40fbde4 ' ..
   'be39e313a1e46bb9'):gmatch('%x+') do CHAR_KINDS[kd] = true end
+-- A body found dead is believed for 1 s (same unit and kind) without asking again: a crowd of bodies near the line
+-- cost an engine call each, every frame. Not for good: a handle handed out again to a live one must count soon.
 local function corpse(it)
+  local dead = S.adead
+  if not dead then dead = {}; S.adead = dead end
+  local d = dead[it.unit]
+  if d and d.kind == it.kind and S.t < d.till then return true end
   local has = call('Unit.has_animation_state_machine', it.unit)
   if has == nil then return false end  -- the call failed: no verdict
   local seen = S.asm
   if not seen then seen = {}; S.asm = seen end
   if has == true then seen[it.unit] = it.kind or true; return false end
-  return seen[it.unit] == (it.kind or true) or CHAR_KINDS[it.kind] == true
+  local is = seen[it.unit] == (it.kind or true) or CHAR_KINDS[it.kind] == true
+  if is then
+    if not d then d = {}; dead[it.unit] = d end
+    d.kind, d.till = it.kind, S.t + 1
+  end
+  return is
 end
 
 -- the game shoots along its own camera line (over your shoulder). While aiming, the view turns a little toward the
@@ -1845,6 +1860,17 @@ local function held_range(D, u)
   return h.d
 end
 
+-- the fixed distance: its own on the FRV gun and on emplacements when set, else aim_dist
+local function fixed_dist()
+  return S.frv == 'gunner' and V.gun_dist > 0 and V.gun_dist or S.empl and V.empl_dist > 0 and V.empl_dist or V.aim_dist
+end
+-- where the game's line (looking down, dz < 0) meets the flat ground at your feet, if that comes before D m
+local function ground_dist(dz, D)
+  if V.aim_ground and S.gnd and dz < -0.01 then
+    local tg = (S.gnd - S.gcz) / dz
+    if tg > 0.5 and tg < D then return tg end
+  end
+end
 local function aim_fix(k, cam, dt)
   local base, mine = game_rot(k, cam)
   if not base then return end
@@ -1860,11 +1886,9 @@ local function aim_fix(k, cam, dt)
     src = D and 'enemy' or 'no enemy'
     -- from the hip hip_strength scales only the extra turn toward the enemy (in 1/distance), the base aim_dist turn
     -- stays whole so shots at range still land
-    -- the fixed distance: its own on the FRV gun and on emplacements when set
-    local base = S.frv == 'gunner' and V.gun_dist > 0 and V.gun_dist or S.empl and V.empl_dist > 0 and V.empl_dist
-      or V.aim_dist
-    if D and not S.aim then D = 1 / (1 / base + V.hip_strength / 10 * (1 / D - 1 / base)) end
-    D = D or base
+    local fd = fixed_dist()
+    if D and not S.aim then D = 1 / (1 / fd + V.hip_strength / 10 * (1 / D - 1 / fd)) end
+    D = D or fd
     -- eased in 1/distance (up close the turn goes with 1/distance, so equal steps feel equal): a held enemy over at
     -- most 0.25 s, back to aim_dist over aim_ease; from the hip both over hip_ease
     local te = max(not S.aim and V.hip_ease or S.hr.d and min(V.aim_ease, 0.25) or V.aim_ease, 0.01)
@@ -1886,10 +1910,8 @@ local function aim_fix(k, cam, dt)
   -- shot at your feet lands on the crosshair. An enemy's range held wins: it's measured, the flat ground is a guess
   -- (on a ledge over an enemy, the feet's level is mid-air)
   local dv, dh = S.ad, S.ad
-  if V.aim_ground and S.gnd and dz < -0.01 and not (S.hr and S.hr.d) then
-    local tg = (S.gnd - S.gcz) / dz
-    if tg > 0.5 and tg < S.ad then dv = tg; if S.aim then dh = tg end end
-  end
+  local tg = not (S.hr and S.hr.d) and ground_dist(dz, S.ad)
+  if tg then dv = tg; if S.aim then dh = tg end end
   local vx, vy, vz = S.gcx + dv * dx - k.wx, S.gcy + dv * dy - k.wy, S.gcz + dv * dz - k.wz
   local vl = sqrt(vx * vx + vy * vy)
   if vl * vl + vz * vz < 0.25 then return end
@@ -2086,7 +2108,8 @@ local function place(w)
   -- a frame whose position isn't a number: the last good head, so first person holds
   if not hx and bad_now(S.head.u) and S.ph then hx, hy, hz = S.ph[1], S.ph[2], S.ph[3] end
   if not hx then return end
-  S.ph = { hx, hy, hz }
+  local ph = S.ph or {}
+  ph[1], ph[2], ph[3], S.ph = hx, hy, hz, ph
   local scoped = false
   -- in a mech the game's camera sits in the mech's own frame (x right, y forward, z up from its root)
   local mx, my, mz, mfx, mfy
@@ -2241,8 +2264,11 @@ local function set_act(act, why)
   local pod = why == 'hellpod'
   if act and S.offwhy == 'hellpod' then S.pin = S.t end
   if not act then S.offwhy, S.pout = why, pod and S.t or nil end
+  local scoped = S.scoped
   if act then S.handing = false else S.handing, S.scoped, S.aim = true, false, false end
-  apply_hiding()
+  -- hiding follows S.shown, which glide() flips (and re-hides then); the one thing here it reads is the scope
+  -- (Hide armor while scoped), cleared on the way out
+  if scoped and not S.scoped then apply_hiding() end
   log('first person view %s (%s)', act and 'on' or 'off', why)
 end
 
@@ -2807,7 +2833,7 @@ local function keep_as() if S.on or S.started then return S.on end end
 local function reset_camera(why)
   local was = keep_as()
   set_on(false, true)
-  S.world, S.keep = nil, was
+  S.world, S.keep, S.keep_w = nil, was, chef.world_id()
   log('camera reset (%s)', why)
 end
 
@@ -2854,11 +2880,12 @@ local function step(dt)
   end
   if chef.world_id() ~= S.world then
     S.started = nil  -- new world (ship <-> mission): old units are gone, start fresh
+    if S.keep_w ~= chef.world_id() then S.keep = nil end  -- a reset's on/off is for the world it happened in
     S.world, S.cams, S.head, S.hidden, S.parts, S.on, S.tx = chef.world_id(), {}, nil, {}, {}, false, nil
     S.ghid, S.gst, S.gsaid = {}, {}, {}
     S.last_scan, S.rescans, S.cam_gen = nil, {}, nil
-    S.hr, S.gfov, S.ghip, S.asm = nil, nil, nil, {}
-    S.gnd, S.gnd_t, S.fzp, S.ph = nil, nil, nil, nil
+    S.hr, S.gfov, S.ghip, S.asm, S.adead = nil, nil, nil, {}, nil
+    S.gnd, S.gnd_t, S.fzp, S.ph, S.bad = nil, nil, nil, nil, nil
     S.bw, S.shown, S.handing = 0, false, false
     S.ad, S.aw, S.podu, S.puse, S.pod = nil, nil, nil, false, false
     S.away, S.away_t, S.spod, S.slow_t, S.sup_t, S.shmax, S.nopod, S.mdrop, S.pfall_t = false, 0, false, 0, 0, nil, false, nil, 0
@@ -2910,8 +2937,13 @@ local function step(dt)
     S.frv_pre = it and FRV_PRE[it.kind] or ''
     S.frv_u = S.frv and it and it.unit or nil
     if not it then S.seat = nil end
-    -- tank seats are known by animation alone, so the tank is just the nearest one: no engine call on a tank at all
+    -- tank seats are known by animation alone, so the tank is just the nearest one: no engine call on a tank to find
+    -- it. The one engine call: a passenger's view asks the hull's facing, and only of a tank that has settled (seen
+    -- 3 s, not dropping or tumbling), as a car's is
     local tk = false
+    -- every listed tank's settle clock runs (the watch's own spot: no engine call), so one already sitting there 3 s
+    -- counts as settled the moment you climb in
+    if tank_watch then for _, t in ipairs(tank_watch.items) do settled(t) end end
     if TANK_ANIM[seat_anim()] and tank_watch and S.head then
       local hx, hy = upos(S.head.u, S.head.node)
       for _, t in ipairs(hx and tank_watch.items or {}) do
@@ -2923,7 +2955,7 @@ local function step(dt)
     S.tank_on = sit and (S.tank_on or 0) + 1 or 0
     S.tank_off = sit and 0 or (S.tank_off or 0) + 1
     if sit and (S.tank or S.tank_on >= 2) then
-      S.tank = { seat = tank_seat(tk), tp = TANKS[tk.kind].tp, id = TANKS[tk.kind].id, u = tk.unit }
+      S.tank = { seat = tank_seat(tk), tp = TANKS[tk.kind].tp, id = TANKS[tk.kind].id, u = tk.unit, still = settled(tk) }
     elseif S.tank and S.tank_off >= 2 then
       S.tank, S.tseat = false, nil; log('out of the tank')
     end
@@ -2968,10 +3000,14 @@ local function step(dt)
   neck(w)
   local vf = S.frv and V[S.frv_pre .. 'frv_fov'] or S.tpass and V[S.tpass .. '_fov'] or S.mech and V[S.mech_pre .. 'mech_fov']
     or S.empl and V[S.empl_pre .. 'empl_fov'] or S.tank and 0
-    or S.act and (S.stance == 'crouch' and V.crouch_fov or S.stance == 'prone' and V.prone_fov) or 0  -- stance: first person only
+    or (S.act or S.bw > 0) and (S.stance == 'crouch' and V.crouch_fov or S.stance == 'prone' and V.prone_fov) or 0  -- stance: first person only (and its glide out)
   -- the game's hip field of view (a slow average while not aiming): how much the game zooms for the weapon in hand is
-  -- its field of view now over that. Only from the game's own values (place reads them), so with nothing read it's 1
-  if S.gfov and not S.aim then S.ghip = S.ghip and S.ghip + (S.gfov - S.ghip) * (1 - exp(-dt * 2)) or S.gfov end
+  -- its field of view now over that. Only from the game's own values (place reads them), so with nothing read it's 1.
+  -- Learned only 0.6 s after letting go of aim: the game's zoom is still coming back out before that
+  S.unaim_t = S.aim and 0 or (S.unaim_t or 0) + dt
+  if S.gfov and not S.aim and (not S.ghip or S.unaim_t >= 0.6) then
+    S.ghip = S.ghip and S.ghip + (S.gfov - S.ghip) * (1 - exp(-dt * 2)) or S.gfov
+  end
   local zoom = 1
   if S.act and S.aim and V.aim_fov == 0 then
     if V.aim_zoom_game and S.gfov and S.ghip and S.ghip > 1 then zoom = max(0.15, min(1.2, S.gfov / S.ghip)) end
@@ -3034,7 +3070,7 @@ local function recover(hook, err)
   if P.open then pcall(open_panel, false) end
   pcall(set_on, false, true)
   S.world = nil
-  if S.keep == nil then S.keep = was end
+  if S.keep == nil then S.keep, S.keep_w = was, chef.world_id() end
   if REC.n >= REC_STOP then
     REC.stopped = true
     log('stopped for this session after %d errors close together: the camera is the game\'s. Please send this log.',
