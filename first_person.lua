@@ -945,6 +945,7 @@ local function hide_guns()
     local refs = { left = node_at(d, 'attach_hand_l'), right = node_at(d, 'attach_hand_r') }
     for _, l in pairs(SLOTS) do for _, n in ipairs(l) do refs[n] = refs[n] or node_at(d, n) end end
     local rx, ry, rz = upos(d)
+    if not rx then return end  -- no position this frame (NaN): the guns as they are, not all shown at once
     local parts, carried = {}, {}
     for _, it in ipairs(rx and gun_watch.items or {}) do
       if (it.x - rx) ^ 2 + (it.y - ry) ^ 2 < 100 and chef.unit_alive(it.unit) then  -- the list's spots are up to 1 s old
@@ -1068,7 +1069,8 @@ local function scan_done(near)
   if not c then return end
   local best, bd = nil, 6
   -- ship: your Helldiver (S.mine) while it's there, never a teammate's (nothing on the ship gives you a new one)
-  local gate = others_here() and not drop_seen() or not chef.in_mission() and S.mine ~= nil and chef.unit_alive(S.mine)
+  local gate = others_here() and not drop_seen() and not S.repick
+    or not chef.in_mission() and S.mine ~= nil and chef.unit_alive(S.mine)
   -- right after your drop: your Helldiver is the one that came down with the pod (30+ m below its highest point;
   -- it exists from the mission load, 2026-11-07 log), so a teammate standing where you land is never taken. None
   -- fell = nearest, as before
@@ -1105,7 +1107,7 @@ local function scan_done(near)
       S.avfollow = {}
       S.drop_t = nil
     end
-    S.mine = best.u
+    S.mine, S.repick = best.u, nil
     S.head = { u = best.u, node = best.node, root = chef.unit_node(best.u, 'root') or 1 }
     S.hmax, S.stance, S.down, S.rising, S.pidle = nil, nil, false, false, nil
     S.rescans = { S.t + 5, S.t + 15 }                -- pieces that load late
@@ -2335,9 +2337,11 @@ local function game_view_far(x, y, z)
     if k.main then
       local cam = cam_of(k)
       local cx, cy, cz = xyz(cam and call('Camera.local_position', cam))
+      local near = false
       if cx and not (k.wx and abs(cx - k.wx) + abs(cy - k.wy) + abs(cz - k.wz) < 0.001) then
         known = true
-        far = far or (cx - x) ^ 2 + (cy - y) ^ 2 + (cz - z) ^ 2 > 3.5 ^ 2
+        near = (cx - x) ^ 2 + (cy - y) ^ 2 + (cz - z) ^ 2 <= 3.5 ^ 2
+        far = far or not near
       end
       -- a menu with a character preview (armory, Warbonds, Superstore) shows through a narrow camera, near the head
       -- or not: the game's own field of view under 48 deg, and clearly narrower (under 0.9x) than the widest the game
@@ -2345,11 +2349,11 @@ local function game_view_far(x, y, z)
       -- field of view setting is under 48 deg from being 'away' all the time
       local fv = cam and call('Camera.vertical_fov', cam)
       if finite(fv) and fv > 0 and not (k.fvw and abs(fv - k.fvw) < 1e-4) then
-        -- the reference: the game's own field of view before we wrote ours (k.fov0), or the widest seen; with neither
-        -- yet, the 48 deg rule alone
-        local ref = max(S.shipfov or 0, finite(k.fov0) and k.fov0 or 0)
+        -- the reference: the game's own field of view before we wrote ours (k.fov0), else the widest seen from a
+        -- camera near the head (a cutscene's wide camera far off never raises it); with neither yet, 48 deg alone
+        local ref = finite(k.fov0) and k.fov0 or S.shipfov or 0
         if fv < math.rad(48) and (ref == 0 or fv < 0.9 * ref) then known, far = true, true end
-        S.shipfov = max(S.shipfov or 0, fv)
+        if near then S.shipfov = max(S.shipfov or 0, fv) end
       end
     end
   end
@@ -2844,8 +2848,13 @@ local function keep_as() if S.on or S.started then return S.on end end
 -- the last drop, and, for an error recovery only, which Helldiver is yours (the
 -- reset key is for a wrong pick, so it forgets that)
 local function carry(keep_mine)
-  S.carry = { w = chef.world_id(), dead = S.dead, dsure = S.dsure, drop_t = S.drop_t,
-    corpse = S.corpse or (S.dead and S.head and S.head.u) or nil, mine = keep_mine and S.mine or nil }
+  -- only a sure death is carried: a guess (the cameras changing while prone) on a living body would make it a
+  -- 'corpse' never picked again. The reset key's restart may pick once whatever the multiplayer gate says, as after
+  -- a drop: it forgot which Helldiver is yours
+  local sure = S.dead and S.dsure or false
+  S.carry = { w = chef.world_id(), dead = sure, dsure = sure or nil, drop_t = S.drop_t,
+    corpse = S.corpse or (sure and S.head and S.head.u) or nil, mine = keep_mine and S.mine or nil,
+    repick = not keep_mine }
 end
 local function reset_camera(why)
   local was = keep_as()
@@ -2919,6 +2928,9 @@ local function step(dt)
     local c = S.carry
     if c and c.w == S.world then
       S.dead, S.dsure, S.drop_t, S.corpse, S.mine = c.dead, c.dsure, c.drop_t, c.corpse, c.mine
+      S.repick = c.repick
+    else
+      S.repick = nil
     end
     S.carry = nil
   end
