@@ -336,6 +336,8 @@ local TABS = {
       hint = 'Hold to see the game\'s camera, let go to go back. Press RIGHT, then the new key.' },
     { id = 'profile_key', label = 'Next profile', key = true, def = 'off',
       hint = 'Switches to the next of the five profiles. Press RIGHT, then the new key. DELETE sets none.' },
+    { id = 'reset_key', label = 'Reset camera', key = true, def = 'off',
+      hint = 'Hands the camera back, forgets your Helldiver and finds it again (first person stays on or off). For a wrong pick or a stuck view.' },
     { head = 'PANEL' },
     { id = 'panel', label = 'Open this panel', key = true, def = 'f10', hint = 'Press RIGHT, then the new key. DELETE sets none.' },
     { id = 'tab_prev', label = 'Previous tab', key = true, def = 'a', hint = 'Moves to the tab on the left. Press RIGHT, then the new key.' },
@@ -2753,8 +2755,18 @@ local function death_check()
   if S.dead and h and h.u ~= S.corpse and not lying and not S.pod then S.dead = false; log('up: first person again') end
 end
 
-function M.update(dt)
+-- give the camera and every hidden mesh back to the game and start again as in a new world: the next frame picks
+-- your Helldiver again. First person comes back on or off as it was.
+local function reset_camera(why)
+  local was = S.on
+  set_on(false, true)
+  S.world, S.keep = nil, was
+  log('camera reset (%s)', why)
+end
+
+local function step(dt)
   local busy = P.capture ~= nil
+  if not busy and binds.reset_key and binds.reset_key.pressed() then reset_camera('reset key'); say('CAMERA RESET') end
   if not busy and binds.panel and binds.panel.pressed() then open_panel(not P.open) end
   if P.open then panel_keys(dt) end
   -- works on the ship too; nil while a world loads
@@ -2847,7 +2859,12 @@ function M.update(dt)
     if mech ~= S.mech then log(mech and 'in a mech' or 'out of the mech') end
     S.mech, S.empl = mech, at_emplacement()
   end
-  if V.start_on and not S.started and S.head then S.started = true; set_on(true) end
+  -- after a reset (the key, or an error the mod got over): first person as it was, whatever Start on says
+  if S.keep ~= nil and S.head then
+    S.started = true
+    if S.keep then set_on(true) end
+    S.keep = nil
+  elseif V.start_on and not S.started and S.head then S.started = true; set_on(true) end
   if not busy and binds.toggle and binds.toggle.pressed() then set_on(not S.on); say(S.on and 'FIRST PERSON ON' or 'FIRST PERSON OFF') end
   if not busy and binds.profile_key and binds.profile_key.pressed() then
     set('profile', V.profile % 5 + 1); apply_hiding(); say('PROFILE ' .. V.profile)
@@ -2891,7 +2908,7 @@ function M.update(dt)
   draw_msg(dt)
 end
 
-function M.render()
+local function render_step()
   local w = chef.world()
   if not w then return end
   hold_body(w, true)
@@ -2909,6 +2926,65 @@ function M.render()
   end
   place(w)
   S.draw = nil
+end
+
+-- A Lua error in a frame. The loader logs only its first three and switches the mod off for the session after 20
+-- (never forgiven), so one rare error every few minutes would end first person halfway through an evening. Here each
+-- error is logged with where it came from (the first time that message is seen), the camera and meshes go back to the
+-- game, and the mod waits 1, 2, 4 ... up to 30 s before it starts again as in a new world. Two minutes with no error
+-- forgive the count; 8 with no such two minutes between them and it stops for the session (the camera already the
+-- game's) and says so on screen.
+local REC = { n = 0, wait = 0, clean = 0, stopped = false, seen = {}, live = false }
+local REC_STOP, REC_FORGIVE, REC_MAX_WAIT = 8, 120, 30
+local function traced(e)
+  local tb = debug and debug.traceback
+  return tb and tb(tostring(e), 2) or tostring(e)
+end
+local function recover(hook, err)
+  REC.n, REC.clean = REC.n + 1, 0
+  -- (the loader's own form, "update error: ...", so anything reading the log for errors still finds it)
+  local first = tostring(err):match('^[^\n]*')
+  if not REC.seen[first] then
+    REC.seen[first] = true
+    log('%s error: %s', hook, tostring(err))
+  else
+    log('%s error: (again) %s', hook, first)
+  end
+  S.draw = nil
+  local was = S.on
+  pcall(set_on, false, true)
+  S.world = nil
+  if S.keep == nil then S.keep = was end
+  if REC.n >= REC_STOP then
+    REC.stopped = true
+    log('stopped for this session after %d errors close together: the camera is the game\'s. Please send this log.',
+      REC.n)
+    S.msg, S.msg_t = 'SHODAN FIRST PERSON STOPPED AFTER ERRORS (SEE THE LOG)', 8
+  else
+    REC.wait = min(REC_MAX_WAIT, 2 ^ (REC.n - 1))
+    log('back in %g s', REC.wait)
+  end
+end
+local frame_dt = 0
+local function update_now() step(frame_dt) end
+function M.update(dt)
+  if type(dt) ~= 'number' or dt ~= dt or dt < 0 or dt == math.huge then dt = 0 end
+  if REC.stopped then pcall(draw_msg, dt); return end
+  if REC.wait > 0 then REC.wait = REC.wait - dt; return end
+  frame_dt = dt
+  REC.live = false
+  local ok, err = xpcall(update_now, traced)
+  if not ok then return recover('update', err) end
+  REC.live = true
+  REC.clean = REC.clean + dt
+  if REC.n > 0 and REC.clean >= REC_FORGIVE then REC.n = 0 end
+end
+-- (only after this frame's update ran clean: the frame a pause ends, the state is still the one from before the
+-- error until the update starts the world again, and placing the camera from it wrote a stale field of view)
+function M.render()
+  if not REC.live then return end
+  local ok, err = xpcall(render_step, traced)
+  if not ok then recover('render', err) end
 end
 
 function M.on_stop()
