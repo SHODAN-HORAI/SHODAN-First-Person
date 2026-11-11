@@ -2327,6 +2327,10 @@ local function aim_fix(k, cam, dt)
   end
   local rate = 1 / max(V.aim_ease, 0.05)
   S.aw = on and min(1, (S.aw or 0) + dt * rate) or max(0, (S.aw or 0) - dt * rate)
+  -- how far into the aim (0 hip, 1 aiming), eased the same way: strength, limit and ground point switched in one
+  -- frame at the click and the view snapped (strength 3 = 70% of the turn at once)
+  S.ab = S.aim and min(1, (S.ab or 0) + dt * rate) or max(0, (S.ab or 0) - dt * rate)
+  local ab = S.ab
   if S.aw <= 0 or not (S.ad and S.gcx and dx) then
     if S.aw <= 0 then S.ad, S.hr, GR.d, GR.st, S.gund = nil, nil, nil, {}, nil end
     if mine then call('Camera.set_local_rotation', cam, k.u, base) end
@@ -2342,7 +2346,7 @@ local function aim_fix(k, cam, dt)
   -- (on a ledge over an enemy, the feet's level is mid-air)
   local dv, dh = S.ad, S.ad
   local tg = not (S.hr and S.hr.d) and ground_dist(dz, S.ad)
-  if tg then dv = tg; if S.aim then dh = tg end end
+  if tg then dv = tg; dh = 1 / (1 / S.ad + ab * (1 / tg - 1 / S.ad)) end
   local vx, vy, vz = S.gcx + dv * dx - k.wx, S.gcy + dv * dy - k.wy, S.gcz + dv * dz - k.wz
   local vl = sqrt(vx * vx + vy * vy)
   if vl * vl + vz * vz < 0.25 then return end
@@ -2354,7 +2358,8 @@ local function aim_fix(k, cam, dt)
   -- never more than aim_max deg off the game's look (at least 20 from the hip with hip_range: the game camera sits ~0.9 m to the side, so an enemy
   -- at 3 m needs ~17 deg)
   local c = hx * dx + hy * dy + hz * dz
-  local lim = math.cos(math.rad((S.aim or not V.hip_range) and V.aim_max or max(V.aim_max, 20)))
+  local hlim = V.hip_range and max(V.aim_max, 20) or V.aim_max
+  local lim = math.cos(math.rad(hlim + ab * (V.aim_max - hlim)))
   if c < lim then
     local px, py, pz = hx - c * dx, hy - c * dy, hz - c * dz
     local pl = sqrt(px * px + py * py + pz * pz)
@@ -2363,8 +2368,9 @@ local function aim_fix(k, cam, dt)
   end
   -- the strength slider only while aiming: from the hip the game camera sits far back, so anything less than the
   -- full turn leaves the shots far off the crosshair (0.3.103 at strength 5)
-  local w = S.aw * (S.aim and V.aim_strength / 10 or 1)
-  local nq = call('Quaternion.look', Vec(dx + w * (hx - dx), dy + w * (hy - dy), dz + w * (hz - dz)), Vec(0, 0, 1))
+  local w = S.aw * (1 + ab * (V.aim_strength / 10 - 1))
+  local fx, fy, fz = dx + w * (hx - dx), dy + w * (hy - dy), dz + w * (hz - dz)
+  local nq = call('Quaternion.look', Vec(fx, fy, fz), Vec(0, 0, 1))
   local _, err = call('Camera.set_local_rotation', cam, k.u, nq)
   if err then once('aw' .. tostring(err), 'aim fix: rotation write refused: %s', tostring(err)) else wrote(k, nq) end
 end
