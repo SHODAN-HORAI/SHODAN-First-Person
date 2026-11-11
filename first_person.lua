@@ -101,6 +101,8 @@ local TABS = {
       hint = 'Switches to the game camera while you use the galactic map.' },
     { id = 'tp_pod', label = 'Third person in the hellpod', toggle = true, def = true,
       hint = 'Switches to the game camera from the moment you use the hellpod on the ship until you climb out, and in the drop until you step out of the pod.' },
+    { id = 'pod_land_fp', label = 'First person once landed', toggle = true, def = false,
+      hint = 'With Third person in the hellpod on: the game camera for the fall only, first person inside the pod 0.5 s after it lands (the body is still left alone: no animation questions until you step out).' },
     { id = 'tp_term', label = 'Third person at terminals', toggle = true, def = true,
       hint = 'Switches to the game camera while you use a mission terminal, and back when you step off it.' },
     { head = '(Experimental, report issues!)', note = true },
@@ -2676,13 +2678,18 @@ end
 
 -- each FRV seat's own Third person row (the model's prefix in front)
 local FRV_TP = { driver = 'frv_tpd', passenger = 'frvp_tp', gunner = 'frvg_tp' }
+-- First person once landed: the mission pod 0.5 s after it lands (still the pod: S.pod keeps the body left alone)
+local function pod_landed_fp()
+  local d = S.mdrop
+  return V.pod_land_fp and chef.in_mission() and d ~= nil and d.land ~= nil and S.t - d.land >= 0.5 or false
+end
 local function update_act()
   local why
   if not S.on then why = 'switched off'
   elseif S.dead then why = 'dead'
   elseif binds.peek and binds.peek.down() and not S.panel then why = 'peek key'
   elseif V.tp_galaxy and S.galaxy then why = 'galactic map'
-  elseif V.tp_pod and (S.puse or S.pod) then why = 'hellpod'  -- user: the game's own view from using a pod
+  elseif V.tp_pod and (S.puse or S.pod) and not pod_landed_fp() then why = 'hellpod'  -- user: the game's own view from using a pod
   elseif S.away and not chef.in_mission() then why = 'game camera away'  -- whatever the settings (the cutscene)
   elseif V.tp_term and S.term then why = 'terminal'
   elseif V.tp_menus and S.map_open then why = 'map'
