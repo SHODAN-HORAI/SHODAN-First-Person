@@ -101,6 +101,11 @@ local TABS = {
       hint = 'With Walking backward: view forward on: Height while the view is slid forward. SAME (all the way right) = the normal Height.' },
     { id = 'swing_hold', label = 'Hold through camera swings', toggle = true, def = false,
       hint = 'A sudden swing of the game camera (more than 60 deg in one frame: a crash, a ragdoll, a blast) is not followed for up to 0.4 s, so the view does not spin around. On foot only.' },
+    { head = 'TILT' },
+    { id = 'tilt', label = 'Sprint tilt', min = 0, max = 6, step = 0.5, def = 2, unit = ' deg', zero = 'OFF',
+      hint = 'While you sprint, the view leans up to this far into turns and sideways runs. Never while aiming, lying or in a seat. Your aim stays exact.' },
+    { id = 'tilt_dive', label = 'Sideways dive tilt', min = 0, max = 10, step = 0.5, def = 4, unit = ' deg', zero = 'OFF',
+      hint = 'A dive to the side leans the view this far toward it while you fly, then levels out as you land.' },
     { head = 'SWITCHING' },
     { id = 'blend', label = 'Glide time', min = 0, max = 1, step = 0.05, def = 0.25, unit = ' s', zero = 'OFF',
       hint = 'How long the view glides between first person and the game camera (peek, seats, terminals, the toggle key). Death, the hellpod and cutscenes always cut.' },
@@ -2162,6 +2167,7 @@ end
 local function wrote(k, q)
   local e1, e2, e3, e4 = call('Quaternion.to_elements', q)
   k.last = { e1, e2, e3, e4 }
+  k.pre, k.pre_n = q, S.pn  -- what this pass wrote, for the sprint tilt to lean (MECH.tilt)
 end
 
 -- enemies (unit kinds from the game's enemy list) to range the crosshair on; positions read live
@@ -2768,6 +2774,41 @@ end
 -- into the shoulder walking uphill). mech_look: COCKPIT turns the view so the crosshair meets the line at Line up at
 -- (an enemy's range with Correct for enemies, never nearer than Nearest enemy distance, glided in 1/distance).
 local MECH = { k = {}, g = {} }
+
+-- Sprint tilt (CAMERA tab, TILT; lives on MECH only because place() already holds it, step/place are at Lua's
+-- upvalue limit): rolls the view about its own line by S.tilt degrees (+ = right, from HUD.lean), on top of what a
+-- limit or the crosshair fix wrote this pass (k.pre), else on the game's own rotation. The line never moves, so the
+-- aim stays exact. Straight up or down it levels (no 'right' to lean toward there)
+function MECH.tilt(k, cam)
+  local pre = k.pre_n == S.pn and k.pre or nil
+  local a = S.tilt or 0
+  if abs(a) < 0.05 and not k.rq then return end
+  local mine
+  if not pre then pre, mine = game_rot(k, cam); if not pre then return end end
+  local fx, fy, fz = xyz(call('Quaternion.forward', pre))
+  local hl = fx and sqrt(fx * fx + fy * fy) or 0
+  if abs(a) < 0.05 or hl < 0.05 then
+    -- level again: only our own leaned write is still on the camera (a writer this pass or the game replaced it)
+    if k.rq and mine then call('Camera.set_local_rotation', cam, k.u, pre); k.last = nil end
+    k.rq = nil; return
+  end
+  local rx, ry = fy / hl, -fx / hl                              -- the view's right, level
+  local ux, uy, uz = ry * fz, -rx * fz, rx * fy - ry * fx       -- its up (right x forward)
+  local r = math.rad(a)
+  local cs, sn = math.cos(r), math.sin(r)
+  local nq = call('Quaternion.look', Vec(fx, fy, fz), Vec(ux * cs + rx * sn, uy * cs + ry * sn, uz * cs))
+  local _, why = call('Camera.set_local_rotation', cam, k.u, nq)
+  if why then once('rq' .. tostring(why), 'sprint tilt: rotation write refused: %s', tostring(why)); return end
+  if not k.rq then once('rq', 'sprint tilt: first lean written (%.1f deg)', a) end
+  k.rq = true; wrote(k, nq); k.pre = nil
+end
+-- a hand-off to the scope or a far camera: a lean still on it goes (the game only rewrites it when the mouse moves)
+function MECH.untilt(k, cam)
+  if not (k.rq and cam) then return end
+  local base, mine = game_rot(k, cam)
+  if base and mine then call('Camera.set_local_rotation', cam, k.u, base) end
+  k.rq, k.last = nil, nil
+end
 function MECH.line(k, cam, state, hx, hy, hz, mx, my, mz, mfx, mfy)
   local base = game_rot(k, cam)
   local fx, fy, fz = xyz(base and call('Quaternion.forward', base))
@@ -2845,6 +2886,7 @@ local function pel_look(k, cam)
 end
 
 local function place(w)
+  S.pn = (S.pn or 0) + 1  -- this pass (update or draw), for wrote()/MECH.tilt
   -- hellpod hand-off: each frame write the game's own camera spot moved toward first person by what's left of 0.25 s
   local bw = not S.act and S.pout and S.tx and 1 - (S.t - S.pout) / 0.25 or 0
   if bw > 0 then
@@ -2954,6 +2996,7 @@ local function place(w)
     if state == 'scope' then scoped = true end
     if state ~= 'ours' and state ~= 'mech' then
       if k.wx then restore(k, cam) end
+      MECH.untilt(k, cam)
       -- not the game's view camera: put back where the game keeps it, so our view never stays in it
       if k.wx and cam and not k.main and k.home then
         call('Camera.set_local_position', cam, k.u, Vec(k.home[1], k.home[2], k.home[3])); call('World.update_unit', w, k.u)
@@ -2998,6 +3041,7 @@ local function place(w)
             if not k.qw then view_limit(k, cam, S.dt or 0.016) end
             if not (k.qw or k.yq) then turn_hold(k, cam, S.dt or 0.016) end
             if not (k.qw or k.yq or k.tq) then k.qlog = nil; aim_fix(k, cam, S.dt or 0.016) end
+            MECH.tilt(k, cam)
           end
           -- Cut the cockpit (MECHS tab): a mech's own near range clears its frame and arm housing from the view
           local nr = S.mech and V[S.mech_pre .. 'mech_clip'] > 0 and V[S.mech_pre .. 'mech_clip']
@@ -3713,6 +3757,40 @@ function HUD.death()
     end
   end
 end
+-- Sprint tilt's lean (S.tilt, degrees, + = right), worked out once per update and eased; MECH.tilt turns the view.
+-- Sprinting = feet over 3.8 m/s, all of it from 4.4 (walking 2-3.3, sprinting 4.4-5.3, 0.3.129 log). Leans into the
+-- run's turn (its heading changing 120 deg/s = the whole lean) and a run across the view (5 m/s = the whole lean).
+-- A sideways dive (S.diving) leans toward it for its first 0.7 s
+function HUD.lean(dt)
+  local c = chef.camera()
+  local hl = c and sqrt(c.fx * c.fx + c.fy * c.fy) or 0
+  local ok = S.act and S.head and hl > 0.2 and dt > 0
+    and not (S.aim or S.scoped or S.down or S.dead or S.dying or S.pod or S.getup or S.stance == 'prone'
+      or S.frv or S.mech or S.empl or S.tank or S.gator or S.pel)
+  local want = 0
+  if ok then
+    local rx, ry = c.fy / hl, -c.fx / hl   -- the view's right, level
+    local vx, vy = S.vx or 0, S.vy or 0
+    local spd = sqrt(vx * vx + vy * vy)
+    local hd = spd > 1 and math.deg(math.atan2(vy, vx)) or nil
+    local yr = hd and S.thd and wrap(hd - S.thd) / dt or 0   -- + = turning left
+    S.thd = hd
+    S.tyr = (S.tyr or 0) + (yr - (S.tyr or 0)) * (1 - exp(-dt / 0.15))
+    local sp = min(1, max(0, (spd - 3.8) / 0.6))
+    want = V.tilt * sp * max(-1, min(1, (vx * rx + vy * ry) / 5 - S.tyr / 120))
+    if S.diving == 'dive_hide_side' and S.fall and V.tilt_dive > 0 then
+      if not S.tdv then
+        S.tdv, S.tds = S.t, S.fall[1] * rx + S.fall[2] * ry > 0 and 1 or -1
+        log('dive tilt: %s', S.tds > 0 and 'right' or 'left')
+      end
+      if S.t - S.tdv < 0.7 then want = V.tilt_dive * S.tds end
+    else S.tdv = nil end
+  else S.thd, S.tyr, S.tdv = nil, 0, nil end
+  S.tilt = (S.tilt or 0) + (want - (S.tilt or 0)) * (1 - exp(-dt / (S.tdv and 0.1 or 0.25)))
+  -- one log line per lean: its biggest, once it levels again
+  if abs(S.tilt) > 0.3 then S.tmax = max(S.tmax or 0, abs(S.tilt))
+  elseif S.tmax then log('sprint tilt: leaned up to %.1f deg', S.tmax); S.tmax = nil end
+end
 -- Knockdown daze (CAMERA tab, DEATH): a knockdown (S.down, see stance(); not in seats) blurs and darkens the screen
 -- at once, holds 0.4 s and clears by 1.8 s. The game's own blur strength (the death effect raises it, this doesn't).
 -- A death takes over at once
@@ -3735,6 +3813,7 @@ end
 -- everything drawn over the game each update: the Mech HUD, the death effect, the knockdown daze (and the sprint
 -- tilt's lean: not a drawing, it only needs this once-per-update call)
 function HUD.overlays(dt)
+  HUD.lean(dt)
   HUD.read()
   HUD.draw()
   HUD.daze()
