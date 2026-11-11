@@ -292,6 +292,8 @@ local TABS = {
       hint = 'Switches to the game\'s camera in this FRV. Off = first person with the offsets below.' },
     { id = 'frv_fov', label = 'Field of view in this FRV', min = 0, max = 120, step = 1, def = 0, unit = ' deg', zero = 'SAME',
       hint = 'Up-down view angle in this FRV, first or third person. SAME = the normal field of view (in third person the game default).' },
+    { id = 'frv_look', label = 'Lowest look in this FRV', min = 0, max = 80, step = 1, def = 35, unit = ' deg', zero = 'OFF',
+      hint = 'Every seat of this FRV: the view tilts no further down than this (eased), so you never look into your own collar. Not while aiming.' },
     { id = 'frv_back', label = 'Looking back: view forward', toggle = true, def = true,
       hint = 'Every seat of this FRV: looking back past your shoulder slides the view the way you look, so you do not look into your own back and shoulders. Not while aiming.' },
     { id = 'frv_back_fwd', label = 'Looking back: forward', min = 0, max = 0.5, step = 0.01, def = 0.15, unit = ' m',
@@ -2547,30 +2549,44 @@ end
 
 -- backward dive: the view tilts no further down than dive_look, eased in and out, so it never looks through the open
 -- collar into the hollow body (log 2026-11-07: head 0.11 m from the chest). Turns the view only, never moves it.
+-- Every FRV seat too (frv_look per model: looking down showed the headless collar, the look_down push didn't clear it)
 local function pitch_limit(k, cam, dt)
-  local on = V.dive_look > 0 and S.diving == 'dive_hide_back' and not S.oblie and not S.getup and not S.aim
+  local L = S.frv and V[(S.frv_pre or '') .. 'frv_look']
+    or S.diving == 'dive_hide_back' and not S.oblie and not S.getup and V.dive_look or 0
+  local on = L > 0 and not S.aim
+  if on then S.pll = L else L = S.pll or L end  -- easing out keeps the last limit
   S.pw = on and min(1, (S.pw or 0) + dt * 8) or max(0, (S.pw or 0) - dt * 6)
   if S.pw <= 0 and not k.qw then return end
   local base, mine = game_rot(k, cam)
   if not base then return end
   if S.pw <= 0 then
     if mine then call('Camera.set_local_rotation', cam, k.u, base) end
-    k.qw, k.last = nil, nil; log('look limit off'); return
+    k.qw, k.last = nil, nil; log('look limit off (game look went to %.0f deg down)', S.pdm or 0); S.pdm = nil; return
   end
   local fx, fy, fz = xyz(call('Quaternion.forward', base))
-  local hl = fx and sqrt(fx * fx + fy * fy) or 0
+  if not fx then return end
+  -- heading: looking down, the camera's up leans the way you face, so forward + up keeps it at and past straight
+  -- down (forward alone shrinks to nothing there: the limit skipped those frames and showed the collar, 2026-11-11)
+  local hx, hy = fx, fy
+  if fz < 0 then
+    local ux, uy = xyz(call('Quaternion.up', base))
+    if ux then hx, hy = fx + ux, fy + uy end
+  end
+  local hl = sqrt(hx * hx + hy * hy)
   if hl < 1e-3 then return end
-  local down = math.deg(math.asin(max(-1, min(1, -fz))))
-  local L, soft = V.dive_look, 10
+  hx, hy = hx / hl, hy / hl
+  local down = math.deg(math.atan2(-fz, fx * hx + fy * hy))  -- over 90 = past straight down
+  S.pdm = max(S.pdm or 0, down)
+  local soft = 10
   local t = down
   if down > L - soft then t = L - soft + soft * (1 - exp(-(down - (L - soft)) / soft)) end
   t = down + S.pw * (t - down)
   local cr, sr = math.cos(math.rad(t)), math.sin(math.rad(t))
-  local nq = call('Quaternion.look', Vec(fx / hl * cr, fy / hl * cr, -sr), Vec(0, 0, 1))
+  local nq = call('Quaternion.look', Vec(hx * cr, hy * cr, -sr), Vec(0, 0, 1))
   local _, why = call('Camera.set_local_rotation', cam, k.u, nq)
   if why then once('qw' .. tostring(why), 'look limit: rotation write refused: %s', tostring(why)); return end
   k.qw = true; wrote(k, nq)
-  if not k.qlog then log('look limit on') end
+  if not k.qlog then log('look limit on (%s, %d deg)', S.frv or 'backward dive', L) end
   k.qlog = true
 end
 
