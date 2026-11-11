@@ -377,32 +377,6 @@ local TABS = {
     { id = 'tdrv_side', label = 'Driver sideways', min = -3, max = 3, step = 0.05, def = 0, unit = ' m',
       hint = 'Left (minus) or right in the driver seat, along the hull.' },
   } },
-  { name = 'SEATS', rows = {
-    { head = 'GATOR' },
-    { id = 'gator_tp', label = 'Third person driving', toggle = true, def = false,
-      hint = 'The game camera in the Gator driver seat (the mission vehicle).' },
-    { id = 'gdrv_fwd', label = 'Driver forward', min = -1, max = 1, step = 0.01, def = 0, unit = ' m',
-      hint = 'Forward or back from your head in the Gator driver seat.' },
-    { id = 'gdrv_up', label = 'Driver height', min = -0.4, max = 2.5, step = 0.01, def = 1.2, unit = ' m',
-      hint = 'Up or down from your head in the Gator driver seat.' },
-    { id = 'gdrv_side', label = 'Driver sideways', min = -0.6, max = 0.6, step = 0.01, def = 0, unit = ' m',
-      hint = 'Left (minus) or right in the Gator driver seat.' },
-    { id = 'ggun_tp', label = 'Third person on the gun', toggle = true, def = false,
-      hint = 'The game camera on the Gator autocannon.' },
-    { id = 'ggun_fwd', label = 'Gunner forward', min = -1, max = 1, step = 0.01, def = 0, unit = ' m',
-      hint = 'Forward or back from your head on the Gator autocannon.' },
-    { id = 'ggun_up', label = 'Gunner height', min = -0.4, max = 2.5, step = 0.01, def = 1.65, unit = ' m',
-      hint = 'Up or down from your head on the Gator autocannon.' },
-    { id = 'ggun_side', label = 'Gunner sideways', min = -0.6, max = 0.6, step = 0.01, def = 0, unit = ' m',
-      hint = 'Left (minus) or right on the Gator autocannon.' },
-    { head = 'PELICAN' },
-    { id = 'pelican_fp', label = 'First person in your seat', toggle = true, def = true,
-      hint = 'At extraction: first person in your Pelican seat, looking round with the mouse, until it takes off (then the game camera). Off: the game camera aboard.' },
-    { id = 'pelican_look', label = 'Look range', min = 30, max = 180, step = 5, def = 100, unit = ' deg',
-      hint = 'How far the mouse turns the view left or right of the way your seat faces (up and down: 60 deg).' },
-    { id = 'pelican_sens', label = 'Look speed', min = 0.2, max = 3, step = 0.1, def = 1,
-      hint = 'How fast the mouse turns the view in the Pelican seat.' },
-  } },
   { name = 'MECHS', rows = {
     { head = 'MECH' },
     { id = 'mech_pick', global = true, label = 'Mech model to edit', min = 1, max = #MECHS, step = 1, def = 1,
@@ -1680,8 +1654,7 @@ end
 local SEAT = { driver = { 'frv_fwd', 'frv_up', 'frv_side' }, passenger = { 'frvp_fwd', 'frvp_up', 'frvp_side' },
   gunner = { 'frvg_fwd', 'frvg_up', 'frvg_side' }, mech = { 'mech_fwd', 'mech_up', 'mech_side' }, empl = { 'empl_fwd', 'empl_up', 'empl_side' },
   bastion = { 'bastion_fwd', 'bastion_up', 'bastion_side' }, maelstrom = { 'maelstrom_fwd', 'maelstrom_up', 'maelstrom_side' },
-  tgun = { 'tgun_fwd', 'tgun_up', 'tgun_side' }, tdrv = { 'tdrv_fwd', 'tdrv_up', 'tdrv_side' },
-  gator = { 'gdrv_fwd', 'gdrv_up', 'gdrv_side' }, ggun = { 'ggun_fwd', 'ggun_up', 'ggun_side' } }
+  tgun = { 'tgun_fwd', 'tgun_up', 'tgun_side' }, tdrv = { 'tdrv_fwd', 'tdrv_up', 'tdrv_side' } }
 
 -- manning an emplacement: your feet stay within 1.2 m of its base (the head isn't inside its box)
 -- the exosuit's settings prefix: from the arm whose box holds the head, else the arm nearest the body (within 6 m)
@@ -2935,18 +2908,6 @@ function MECH.look(k, cam, dt, state, mx, my, mz, mfx, mfy)
   wrote(k, nq)
 end
 
-local function pel_look(k, cam)
-  local d = S.pel_dir
-  if not d then return end
-  local cy, sy = math.cos(S.pel_yaw or 0), math.sin(S.pel_yaw or 0)
-  local lx, ly = d[1] * cy - d[2] * sy, d[1] * sy + d[2] * cy
-  local cp = math.cos(S.pel_pitch or 0)
-  local nq = call('Quaternion.look', Vec(lx * cp, ly * cp, math.sin(S.pel_pitch or 0)), Vec(0, 0, 1))
-  local _, why = call('Camera.set_local_rotation', cam, k.u, nq)
-  if why then once('pq' .. tostring(why), 'Pelican seat: rotation write refused: %s', tostring(why)); return end
-  wrote(k, nq)
-end
-
 local function place(w)
   S.pn = (S.pn or 0) + 1  -- this pass (update or draw), for wrote()/MECH.tilt
   -- hellpod hand-off: each frame write the game's own camera spot moved toward first person by what's left of 0.25 s
@@ -3011,9 +2972,8 @@ local function place(w)
       -- in a backward dive's air part it is always the squeezed one (0.12-0.14 m ahead, 1.0.32 log), never a scope
       local air = S.diving == 'dive_hide_back' and not S.oblie
       state = d < 0.4 and al > 0.1 and not air and 'scope' or d > 8 and not warp and 'far' or 'ours'
-      -- a seat whose game camera sits far off (the Pelican's outside shot, a tank crew seat, the Gator) and where you
-      -- chose first person: written like a near one
-      if state == 'far' and (S.pel_seat or S.tcrew or S.gator) and not mfx then state = 'ours' end
+      -- a tank crew seat: its game camera sits far off; where you chose first person it is written like a near one
+      if state == 'far' and S.tcrew and not mfx then state = 'ours' end
       -- gliding out to the galactic table: follow the game's camera all the way out (a 'far' hand-off cut the glide)
       if state == 'far' and k.main and S.galaxy and S.bw > 0 then state = 'ours' end
       if state ~= k.state and d < 0.4 then log('camera %d: %.2f m from the head, %.2f m ahead', ci, d, al) end
@@ -3098,8 +3058,7 @@ local function place(w)
         local _, why = call('Camera.set_local_position', cam, k.u, Vec(px, py, pz))
         if why then once('w' .. tostring(why), 'camera write refused: %s', tostring(why))
         else
-          if S.pel_seat and state == 'ours' then pel_look(k, cam)
-          elseif mk then MECH.look(k, cam, S.dt or 0.016, state, mx, my, mz, mfx, mfy)
+          if mk then MECH.look(k, cam, S.dt or 0.016, state, mx, my, mz, mfx, mfy)
           elseif k.main and state == 'ours' and not S.mech then
             pitch_limit(k, cam, S.dt or 0.016)
             if not k.qw then view_limit(k, cam, S.dt or 0.016) end
@@ -3454,10 +3413,10 @@ local function update_act()
   elseif V.tp_menus and S.map_open then why = 'map'
   elseif V.tp_menus and S.strat_open then why = 'stratagems'
   elseif V.tp_down and S.kdown and not S.pod then why = 'knocked down'  -- the game's ragdoll layer (HUD.daze)
-  elseif S.pel and (not V.pelican_fp or S.pel_gone) then why = 'Pelican'
+  elseif S.pel then why = 'Pelican'
   elseif S.tank and (S.tank.seat == 'crew' and not V.tgun_fp or S.tank.seat == 'driver' and not V.tdrv_fp
     or S.tank.seat ~= 'crew' and S.tank.seat ~= 'driver' and V[S.tank.tp]) then why = 'tank ' .. tostring(S.tank.seat)
-  elseif S.gator and V[S.gator == 'ggun' and 'ggun_tp' or 'gator_tp'] then why = 'Gator'
+  elseif S.gator then why = 'Gator'
   elseif S.frv and (V[S.frv_pre .. 'frv_tp'] or V[S.frv_pre .. FRV_TP[S.frv]]) then why = 'FRV'
   elseif S.mech and V[S.mech_pre .. 'tp_mech'] then why = 'mech'
   elseif S.empl and V[S.empl_pre .. 'tp_empl'] then why = 'emplacement' end
@@ -4450,47 +4409,11 @@ local function pad_step()
   PADT.was = active
 end
 
--- the Pelican at extraction: the game cuts to its outside shots as soon as you sit. First person stays in your seat,
--- the mouse looking round within Look range of the way the seat faces, until take-off (the seat 6 m above the lowest
--- it sat, rising over 2 m/s for 0.5 s, or 30 m from where it sat); then the game camera for the flight. The first 5 s
--- aboard always stay (alone, it leaves at once). The seat view starts once you've sat still 0.5 s in a seated state.
-local function pelican_step(on, l14, dt)
-  if not on then
-    if S.pel then log('out of the Pelican') end
-    S.pel, S.pel_seat, S.pel_gone, S.pel_t, S.pel_mv = false, false, false, nil, nil
-    return
-  end
-  if not S.pel then S.pel, S.pel_t = true, S.t; log('boarding the Pelican (layer 14 = %s)', tostring(l14)) end
-  local x, y, z = upos(S.head.u)
-  if not x then return end
-  local mv = S.pel_mv
-  if not mv or abs(x - mv[1]) + abs(y - mv[2]) + abs(z - mv[3]) > 0.15 then mv = { x, y, z, S.t }; S.pel_mv = mv end
-  local early = S.t - S.pel_t < 5
-  if V.pelican_fp and not S.pel_seat and not S.pel_gone and l14 >= 90 and S.t - mv[4] > 0.5 then
-    local fx, fy = chef.unit_rotation(S.head.u)
-    local l = (finite(fx) and finite(fy)) and sqrt(fx * fx + fy * fy) or 0
-    S.pel_seat, S.pel_at, S.pel_low, S.pel_climb, S.pel_pz = true, { x, y, z }, z, nil, z
-    S.pel_dir = l > 1e-4 and { fx / l, fy / l } or { 0, 1 }
-    S.pel_yaw, S.pel_pitch = 0, 0
-    log('in your Pelican seat: first person until take-off')
-  end
-  if not S.pel_seat then return end
-  S.pel_low = min(S.pel_low, z)
-  local vz = dt > 0 and (z - S.pel_pz) / dt or 0
-  S.pel_pz = z
-  S.pel_climb = vz > 2 and (S.pel_climb or S.t) or nil
-  local a = S.pel_at
-  local up = z - S.pel_low > 6 or (S.pel_climb ~= nil and S.t - S.pel_climb > 0.5) or abs(x - a[1]) + abs(y - a[2]) > 30
-  if up and not early then S.pel_seat, S.pel_gone = false, true; log('the Pelican took off: game camera'); return end
-  if not P.open and chef.mouse_delta then
-    local dx, dy = chef.mouse_delta()
-    if finite(dx) and finite(dy) and abs(dx) < 2000 and abs(dy) < 2000 then
-      local k = 0.0025 * V.pelican_sens
-      local ym, pm = math.rad(V.pelican_look), math.rad(60)
-      S.pel_yaw = max(-ym, min(ym, S.pel_yaw - dx * k))
-      S.pel_pitch = max(-pm, min(pm, S.pel_pitch - dy * k))
-    end
-  end
+-- the Pelican at extraction: the game camera aboard, like the Gator (user 2026-11-11)
+local function pelican_step(on, l14)
+  if on and not S.pel then log('boarding the Pelican (layer 14 = %s)', tostring(l14))
+  elseif not on and S.pel then log('out of the Pelican') end
+  S.pel = on
 end
 
 -- the seats known only by the seat layer (the Gator, the Pelican; the tank crew's seat): read with the other layers,
@@ -4508,7 +4431,7 @@ local function seat_layer_step(dt)
     S.gator = g
     log(g and ('Gator seat: ' .. (g == 'ggun' and 'gunner' or 'driver') .. ' (layer 14 = %d)') or 'out of the Gator', l14)
   end
-  pelican_step(L14.PELICAN[l14] and S.head ~= nil, l14, dt)
+  pelican_step(L14.PELICAN[l14] ~= nil and S.head ~= nil, l14)
 end
 
 local function step(dt)
@@ -4541,7 +4464,7 @@ local function step(dt)
     S.down_any, S.getup, S.rising = false, false, false
     S.act, S.down, S.stance, S.hmax, S.fv = false, false, nil, nil, nil
     S.mech, S.mech_it, S.frv, S.empl, S.tank, S.tpass = false, false, false, false, false, false
-    S.tcrew, S.gator, S.pel, S.pel_seat, S.pel_gone, S.pel_t, S.pel_mv, S.l14, S.l14_t = false, false, false, false, false, nil, nil, nil, nil
+    S.tcrew, S.gator, S.pel, S.l14, S.l14_t = false, false, false, nil, nil
     S.dead, S.corpse, S.corpses, S.avs, S.av_gen, S.dgen, S.dcams = false, nil, nil, nil, nil, nil, nil
     S.corpse_h = nil
     S.mine, S.drop_t, S.fall_t, S.lcz, S.fall_max, S.avtop, S.avfollow = nil, nil, 0, nil, 0, {}, {}
