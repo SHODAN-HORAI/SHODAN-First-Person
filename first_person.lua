@@ -82,6 +82,8 @@ local TABS = {
     { id = 'smooth_max', label = 'Smoothing lag limit', min = 0, max = 0.3, step = 0.01, def = 0.12, unit = ' m', zero = 'OFF',
       hint = 'The smoothed view never trails your head by more than this, so quick moves (crouching, a jolt in a seat) stay crisp.' },
     { head = 'SWITCHING' },
+    { id = 'blend', label = 'Glide time', min = 0, max = 1, step = 0.05, def = 0.25, unit = ' s', zero = 'OFF',
+      hint = 'How long the view glides between first person and the game camera (peek, seats, terminals, the toggle key). Death, the hellpod and cutscenes always cut.' },
     { id = 'start_on', label = 'Start in first person', toggle = true, def = true,
       hint = 'Turn first person on by itself at the start of every mission.' },
     { id = 'messages', label = 'On-screen messages', toggle = true, def = true, global = true,
@@ -447,7 +449,7 @@ local function set(id, v)
 end
 
 ---------------------------------------------------------------------------------------------------- camera
-local S = { on = false, cams = {}, head = nil, look = 0, frv_t = 0, said = {}, parts = {}, hidden = {}, uhid = {}, ghid = {}, gst = {}, gsaid = {}, world = -1,
+local S = { on = false, cams = {}, head = nil, look = 0, bw = 0, shown = false, frv_t = 0, said = {}, parts = {}, hidden = {}, uhid = {}, ghid = {}, gst = {}, gsaid = {}, world = -1,
   t = 0, rescans = {} }
 -- a node index is only passed on while the unit has that many nodes: the loader checks the unit, not the index, and
 -- indices are kept (per kind, per unit), so a handle the engine hands out again for another unit must not get one
@@ -920,7 +922,7 @@ end
 local function hide_guns()
   local want = {}
   local d = S.head and S.head.u
-  if S.act and d and gun_watch and chef.unit_alive(d) then
+  if S.shown and d and gun_watch and chef.unit_alive(d) then
     local refs = { left = node_at(d, 'attach_hand_l'), right = node_at(d, 'attach_hand_r') }
     for _, l in pairs(SLOTS) do for _, n in ipairs(l) do refs[n] = refs[n] or node_at(d, n) end end
     local rx, ry, rz = upos(d)
@@ -1223,7 +1225,7 @@ end
 -- meshes: hide what the settings ask for (again each time: the game can show them), show again only what we hid
 local function apply_hiding()
   local want = {}
-  if S.act then
+  if S.shown then
     for _, p in ipairs(S.parts) do
       for id, list in pairs(p.groups or {}) do
         if V[id] or (SCOPED[id] and (V.hide_armor and S.scoped or S.divehide)) then
@@ -1256,12 +1258,12 @@ local function apply_hiding()
   local n, uw = 0, {}
   for _, p in ipairs(S.parts) do
     if p.gear then
-      if S.act and V[p.gear] then uw[p.u] = true end
+      if S.shown and V[p.gear] then uw[p.u] = true end
     elseif p.groups and next(p.groups) == nil and p.u ~= (S.head and S.head.u) then
       n = n + 1
       local r = ROW['extra' .. n]
       if r then r.label = 'Piece ' .. n .. ' (on ' .. (p.bone or '?') .. ')' end
-      if S.act and V['extra' .. n] then uw[p.u] = true end
+      if S.shown and V['extra' .. n] then uw[p.u] = true end
     end
   end
   for i = n + 1, 4 do if ROW['extra' .. i] then ROW['extra' .. i].label = 'Piece ' .. i .. ' (none)' end end
@@ -1929,8 +1931,8 @@ local function neck(w)
   S.nk = n
   local u = S.head and S.head.u
   -- S.stance is nil until the first stance change (0.3.130: nothing worked until the first crouch): nil = standing
-  local ok = V.imm_on and S.act and u and (S.stance or 'stand') ~= 'prone'
-    and not (S.aim or S.diving or S.getup or S.frv or S.mech or S.empl or S.tank or S.down or S.dead)
+  local ok = V.imm_on and S.shown and u and (S.stance or 'stand') ~= 'prone'
+    and not (S.aim or S.diving or S.getup or S.frv or S.mech or S.empl or S.tank or S.pod or S.down or S.dead)
   if not ok then n.want, n.run, n.rt, n.px = nil, false, 0, nil; return end
   local c = chef.camera()
   local bx, by = chef.unit_rotation(u)
@@ -2020,7 +2022,7 @@ local function place(w)
   local bw = not S.act and S.pout and S.tx and 1 - (S.t - S.pout) / 0.25 or 0
   if bw > 0 then
     for _, k in ipairs(S.cams) do
-      local cam = k.main and call('Unit.camera', k.u, k.slot)
+      local cam = k.main and cam_of(k)
       local cx, cy, cz = xyz(cam and call('Camera.local_position', cam))
       if cx then
         call('Camera.set_local_position', cam, k.u, Vec(cx + (S.tx - cx) * bw, cy + (S.ty - cy) * bw, cz + (S.tz - cz) * bw))
@@ -2028,7 +2030,7 @@ local function place(w)
       end
     end
   end
-  if not S.act then
+  if not S.act and S.bw <= 0 then
     -- third person: only a vehicle's own field of view, else the game's
     for _, k in ipairs(S.cams) do
       local cam = (S.fv or k.fov0) and cam_of(k)
@@ -2129,6 +2131,12 @@ local function place(w)
         once('badwrite', 'a camera position came out not a number: not written')
         return
       end
+      -- gliding: between the game's own spot this frame and first person, eased
+      local e = 1
+      if S.bw < 1 and k.gp then
+        e = S.bw * S.bw * (3 - 2 * S.bw)
+        px, py, pz = k.gp[1] + (px - k.gp[1]) * e, k.gp[2] + (py - k.gp[2]) * e, k.gp[3] + (pz - k.gp[3]) * e
+      end
       k.wx, k.wy, k.wz = px, py, pz
       -- the game's own field of view this frame (the aim zoom follows it): any value but the one we wrote last
       if k.main then
@@ -2151,6 +2159,7 @@ local function place(w)
         if S.fv then
           k.fov0 = k.fov0 or call('Camera.vertical_fov', cam)
           k.fvw = math.rad(S.fv)
+          if e < 1 and type(k.fov0) == 'number' then k.fvw = k.fov0 + (k.fvw - k.fov0) * e end
           call('Camera.set_vertical_fov', cam, k.fvw)
         elseif k.fov0 then call('Camera.set_vertical_fov', cam, k.fov0); k.fov0, k.fvw = nil, nil end
         call('World.update_unit', w, k.u)
@@ -2161,40 +2170,66 @@ local function place(w)
 end
 
 -- our camera in use: on, and nothing hands the view to the game's camera (peek key, knocked down, mech, emplacement)
+-- the view handed back to the game (once a glide out ends): the game holds its camera still while you use a pod, so
+-- it stayed where we last put it (in the head, 0.3.100): put the game's own last spot and turn back
+local function hand_back()
+  S.handing = false
+  local w = chef.world()
+  local pod = S.offwhy == 'hellpod'
+  for _, k in ipairs(S.cams) do
+    local cam = cam_of(k)
+    if cam and k.wx and not k.main and k.home then
+      -- not the game's view camera: back where the game keeps it, so our view never stays in it
+      call('Camera.set_local_position', cam, k.u, Vec(k.home[1], k.home[2], k.home[3]))
+    elseif not pod then
+      if cam and k.wx and k.gp then call('Camera.set_local_position', cam, k.u, Vec(k.gp[1], k.gp[2], k.gp[3])) end
+      if cam and k.last and k.qb then call('Camera.set_local_rotation', cam, k.u, call('Quaternion.from_elements', k.qb[1], k.qb[2], k.qb[3], k.qb[4])) end
+    end
+    if cam and w and (k.wx or k.last) then call('World.update_unit', w, k.u) end
+    restore(k, cam); k.wx, k.state, k.last = nil, nil, nil
+  end
+  S.tx = nil
+end
+
 local function set_act(act, why)
   if act == S.act then return end
-  S.act = act
-  -- hellpod: nothing written back, 0.25 s ease into the game's own camera and back out of it
+  S.act, S.why = act, why
+  -- hellpod: nothing written back, 0.25 s ease into the game's own camera and back out of it (not the glide)
   local pod = why == 'hellpod'
   if act and S.offwhy == 'hellpod' then S.pin = S.t end
   if not act then S.offwhy, S.pout = why, pod and S.t or nil end
-  if not act then
-    -- other hand-offs: put the game's own last spot back and turn back (0.3.100)
-    local w = chef.world()
-    for _, k in ipairs(S.cams) do
-      local cam = cam_of(k)
-      if cam and k.wx and not k.main and k.home then
-        -- not the game's view camera: back where the game keeps it, so our view never stays in it
-        call('Camera.set_local_position', cam, k.u, Vec(k.home[1], k.home[2], k.home[3]))
-      elseif not pod then
-        if cam and k.wx and k.gp then call('Camera.set_local_position', cam, k.u, Vec(k.gp[1], k.gp[2], k.gp[3])) end
-        if cam and k.last and k.qb then call('Camera.set_local_rotation', cam, k.u, call('Quaternion.from_elements', k.qb[1], k.qb[2], k.qb[3], k.qb[4])) end
-      end
-      if cam and w and (k.wx or k.last) then call('World.update_unit', w, k.u) end
-      restore(k, cam)
-      k.wx, k.state, k.last = nil, nil, nil
-    end
-    S.tx, S.scoped, S.aim = nil, false, false
-  end
+  if act then S.handing = false else S.handing, S.scoped, S.aim = true, false, false end
   apply_hiding()
   log('first person view %s (%s)', act and 'on' or 'off', why)
 end
 
-local function set_on(on)
-  if on == S.on then return end
-  S.on = on
-  log('first person %s', on and 'on' or 'off')
-  if not on then set_act(false, 'switched off') end
+-- the glide between the game camera and first person: S.bw 0 (the game's) .. 1 (first person) over Glide time,
+-- hiding switching halfway (S.shown). A cut instead for death, the hellpod and the ship's cutscenes: a glide there
+-- would show a cutscene from the head or fly out of a dead body. (A game camera over 8 m from the head is never
+-- written at all: place hands it off as 'far'.)
+local CUT = { dead = true, hellpod = true, ['game camera away'] = true }
+local function glide(dt)
+  local goal = S.act and 1 or 0
+  if S.bw ~= goal then
+    -- back from a hellpod: its own 0.25 s ease (S.pin) does it
+    if V.blend <= 0 or CUT[S.why] or goal == 1 and S.offwhy == 'hellpod' or not S.head then S.bw = goal
+    elseif goal > S.bw then S.bw = min(1, S.bw + dt / V.blend)
+    else S.bw = max(0, S.bw - dt / V.blend) end
+    if abs(S.bw - goal) < 1e-9 then S.bw = goal end
+  end
+  local shown = S.bw >= 0.5
+  if shown ~= S.shown then S.shown = shown; apply_hiding() end
+  if S.bw <= 0 and S.handing then hand_back() end
+end
+
+-- now: hand the view back at once, no glide (the mod stopping, the world going)
+local function set_on(on, now)
+  if on ~= S.on then
+    S.on = on
+    log('first person %s', on and 'on' or 'off')
+    if not on then set_act(false, 'switched off') end
+  end
+  if now and not on then S.bw = 0; glide(0) end
 end
 
 -- galactic map (ship only): using the table puts your feet on one fixed spot and leans you over it, head about
@@ -2704,7 +2739,7 @@ function M.update(dt)
   -- works on the ship too; nil while a world loads
   local w = chef.world()
   if not w then
-    if S.on then set_on(false) end
+    set_on(false, true)
     S.started = nil
     if P.open then draw_panel(dt) end
     return
@@ -2716,6 +2751,7 @@ function M.update(dt)
     S.last_scan, S.rescans, S.cam_gen = nil, {}, nil
     S.hr, S.gfov, S.ghip, S.asm = nil, nil, nil, {}
     S.gnd, S.gnd_t, S.fzp, S.ph = nil, nil, nil, nil
+    S.bw, S.shown, S.handing = 0, false, false
     S.ad, S.aw, S.podu, S.puse, S.pod = nil, nil, nil, false, false
     S.away, S.away_t, S.spod, S.slow_t, S.sup_t, S.shmax, S.nopod, S.mdrop, S.pfall_t = false, 0, false, 0, 0, nil, false, nil, 0
     S.calm_t = 0
@@ -2807,6 +2843,7 @@ function M.update(dt)
   if S.on and V.tp_pod then pod_check() else S.puse = false end
   menu_check()
   update_act()
+  glide(dt)
   -- aiming (right mouse, held or toggled): its own field of view, blended; 0 = the same as the normal one
   local rmb = not P.open and chef.mouse_down('right') or false
   if V.aim_toggle then
@@ -2825,7 +2862,7 @@ function M.update(dt)
     if V.aim_zoom_game and S.gfov and S.ghip and S.ghip > 1 then zoom = max(0.15, min(1.2, S.gfov / S.ghip)) end
     zoom = zoom * (1 - V.aim_zoom / 100)
   end
-  local want = S.act and (S.aim and V.aim_fov > 0 and V.aim_fov or (vf > 0 and vf or V.fov) * zoom) or vf
+  local want = (S.act or S.bw > 0) and (S.aim and V.aim_fov > 0 and V.aim_fov or (vf > 0 and vf or V.fov) * zoom) or vf
   if want > 0 then S.fv = S.fv and S.fv + (want - S.fv) * (1 - exp(-dt * 14)) or want else S.fv = nil end
   hide_guns()
   place(w)
@@ -2854,7 +2891,7 @@ function M.render()
 end
 
 function M.on_stop()
-  set_on(false)
+  set_on(false, true)
   if P.open then open_panel(false) end
 end
 M.shutdown = M.on_stop
