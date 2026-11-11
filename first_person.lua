@@ -75,6 +75,8 @@ local TABS = {
       hint = 'Takes the up-down head bob out of walking and running. Higher is calmer.' },
     { id = 'smooth_side', label = 'Smoothing sideways', min = 0, max = 10, step = 1, def = 3, zero = 'OFF',
       hint = 'Takes the side-to-side sway out. Keep it low so turning still feels quick.' },
+    { id = 'smooth_max', label = 'Smoothing lag limit', min = 0, max = 0.3, step = 0.01, def = 0.12, unit = ' m', zero = 'OFF',
+      hint = 'The smoothed view never trails your head by more than this, so quick moves (crouching, a jolt in a seat) stay crisp.' },
     { head = 'SWITCHING' },
     { id = 'start_on', label = 'Start in first person', toggle = true, def = true,
       hint = 'Turn first person on by itself at the start of every mission.' },
@@ -333,8 +335,16 @@ local SCOPED = { hide_neck = true, hide_body = true, hide_shoulders = true }
 local V, ROW = {}, {}
 -- profile 1 keeps the plain save names (settings from before profiles); 2-5 save as p<N>_<id>; keys + global rows are shared
 local function sk(r)
-  local n = V.profile or chef.load('profile', 1)
+  local n = V.profile or tonumber(chef.load('profile', 1)) or 1
   return (n > 1 and not r.global) and ('p' .. n .. '_' .. r.id) or r.id
+end
+-- a row's saved value: its default when there's none or it's another type (a setting added in a newer version, a
+-- damaged save), numbers held to the row's range
+local function load_row(r)
+  local v = chef.load(sk(r), r.def)
+  if type(v) ~= type(r.def) then return r.def end
+  if type(v) == 'number' and r.min then v = math.min(r.max, math.max(r.min, v)) end
+  return v
 end
 -- the user's tuned values as defaults for vehicle rows, per model copy (copies otherwise take the base row's own default)
 local MY_DEF = { frv_fwd = 0.08, frv_up = -0.08, frv_side = 0, frvp_fwd = 0, frvp_up = 0, frvp_side = 0, sp_frv_fwd = 0.08, sp_frv_up = -0.08, sp_frv_side = 0, sp_frvp_fwd = 0, sp_frvp_up = 0, sp_frvp_side = 0, fl_frv_fwd = 0.08, fl_frv_up = -0.08, fl_frv_side = 0, fl_frvp_fwd = 0, fl_frvp_up = 0, fl_frvp_side = 0, se_frv_fwd = 0.08, se_frv_up = -0.08, se_frv_side = 0, se_frvp_fwd = 0, se_frvp_up = 0, se_frvp_side = 0, frvg_fwd = 0, frvg_up = 0.06, frvg_side = 0, fl_frvg_fwd = 0, fl_frvg_up = 0.06, fl_frvg_side = 0,
@@ -353,7 +363,7 @@ for _, tab in ipairs(TABS) do
       r.def0 = r.def
       if MY_DEF[r.id] ~= nil then r.def = MY_DEF[r.id] end
       ROW[r.id] = r
-      if r.key then binds[r.id] = chef.bind(r.id, r.def, r.label) else V[r.id] = chef.load(sk(r), r.def) end
+      if r.key then binds[r.id] = chef.bind(r.id, r.def, r.label) else V[r.id] = load_row(r) end
     end
   end
 end
@@ -381,7 +391,7 @@ for pid, pk in pairs(PICKS) do
       if c.def == nil then c.def = VEH[at].def0 end
       if c.id:match('frv_tp$') then c.label = 'Third person in ' .. f.name:sub(1, 1) .. f.name:sub(2):lower() .. ' FRV' end
       pk.sets[i][j] = c
-      if f.pre ~= '' then ROW[c.id] = c; V[c.id] = chef.load(sk(c), c.def) end
+      if f.pre ~= '' then ROW[c.id] = c; V[c.id] = load_row(c) end
     end
   end
 end
@@ -405,7 +415,7 @@ local function set(id, v)
   if v == r.def then chef.save(sk(r), nil) else chef.save(sk(r), v) end  -- (v ~= def and v or nil) lost every false
   if PICKS[id] then show_pick(id) end
   if id == 'profile' then  -- load the new profile's values
-    for rid, row in pairs(ROW) do if not row.key and not row.global then V[rid] = chef.load(sk(row), row.def) end end
+    for rid, row in pairs(ROW) do if not row.key and not row.global then V[rid] = load_row(row) end end
     for pid in pairs(PICKS) do show_pick(pid) end
   end
 end
@@ -1585,6 +1595,15 @@ local function target(dt)
   local fly = (fast > 8 or S.vz > 5) and not (S.frv or S.mech or S.empl or S.tank)
   if fly then local g = 1 - exp(-dt / 0.03); a, b = max(a, g), max(b, g) end
   S.sm[1], S.sm[2], S.sm[3] = S.sm[1] + (ox - S.sm[1]) * a, S.sm[2] + (oy - S.sm[2]) * a, S.sm[3] + (oz - S.sm[3]) * b
+  -- never more than smooth_max behind the head: sideways as one distance, up-down on its own (the bob it smooths is
+  -- a few cm; a lag of tens of cm is a quick move the view should keep up with)
+  local lim = V.smooth_max
+  if lim > 0 then
+    local ex, ey, ez = S.sm[1] - ox, S.sm[2] - oy, S.sm[3] - oz
+    local el = sqrt(ex * ex + ey * ey)
+    if el > lim then local k = lim / el; S.sm[1], S.sm[2] = ox + ex * k, oy + ey * k end
+    if ez > lim then S.sm[3] = oz + lim elseif ez < -lim then S.sm[3] = oz - lim end
+  end
   local c = chef.camera()
   local fx, fy, fz = 0, 1, 0
   if c then fx, fy, fz = c.fx, c.fy, c.fz end
