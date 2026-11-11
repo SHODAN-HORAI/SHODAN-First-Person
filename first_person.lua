@@ -1654,6 +1654,9 @@ end
 local STANCES = { stand = { 0, 0, 0 }, crouch = { 'crouch_fwd', 'crouch_up', 'crouch_side' }, prone = { 'prone_fwd', 'prone_up', 'prone_side' } }
 -- the get-up's own animations (logs 2026-11-06): a quick get-up starts before 'settled prone' is ever seen
 local GETUP_ANIM = { [43] = true, [70] = true, [71] = true, [72] = true }
+-- still flat: crawling/turning (41, 50), dive landings (45, 47), lying idle (42, 48). Counted as getting up they held
+-- the get-up's stay-ahead for seconds, so looking back put the view out over the legs (log 2026-11-11)
+local LIE_ANIM = { [41] = true, [42] = true, [45] = true, [47] = true, [48] = true, [50] = true }
 local function stance(dt, ox, oy, oz, rx, ry)
   -- tallest standing height: on foot only (the FRV gun read 2.1 m and made standing look like a crouch)
   if not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) then S.hmax = max(S.hmax or 1.2, min(oz, 1.85)) end
@@ -1667,10 +1670,16 @@ local function stance(dt, ox, oy, oz, rx, ry)
   -- a dive throws you head first the way you were moving as you started going down: such a lie is not a knockdown
   -- (a real dive read 4.7 m/s, head along it 0.98 in the log, 2026-11-06)
   local l = sqrt(ox * ox + oy * oy)
+  -- how fast the head rises over the feet, eased (a get-up rises, a dive drops)
+  local hv = S.poz and dt > 0 and (oz - S.poz) / dt or 0
+  S.poz, S.ozv = oz, (S.ozv or 0) + (hv - (S.ozv or 0)) * (1 - exp(-dt * 20))
   if r > 0.75 then S.fall, S.dive = nil, nil
   elseif not S.fall then
     local v = sqrt(S.vx * S.vx + S.vy * S.vy)
-    S.fall = v > 1.5 and { S.vx / v, S.vy / v, v } or false
+    -- not while still low in a get-up or lying: the get-up animation and fast crawling move the feet 1.5+ m/s, and
+    -- that 'fall' cut the get-up and started a dive half way up (log 2026-11-11, 95.9 s and 121.8 s)
+    -- the last step of a get-up moves them 1.5+ m/s too, head still rising: no dive until the head drops
+    S.fall = v > 1.5 and not (S.rising and (r < 0.6 or S.ozv > 0.3)) and { S.vx / v, S.vy / v, v } or false
     -- diving out of a get-up ends the get-up: its stay-ahead held the view over your legs (2026-11-07)
     if S.fall and S.rising then S.rising, S.pidle, S.prone_t = false, nil, 0; log('get-up cut by a dive') end
     -- 4th value: the way you go down along the view (1 forward, 0 sideways, -1 backward)
@@ -1684,16 +1693,26 @@ local function stance(dt, ox, oy, oz, rx, ry)
   end
   -- diving: known lie after a dive, or already mid-air (going down fast with the head out ahead along the motion)
   local dv = S.dive == true and S.fall and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel)
-  if not dv and S.fall and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) and r < 0.75 and l > 0.3 then dv = (ox * S.fall[1] + oy * S.fall[2]) / l > 0.5 end
+  -- not while lying or getting up: the fall left from going down started a 'dive' mid get-up (log 2026-11-11)
+  -- and the head 0.45 m out: landing from a step or ledge while moving dips the head to 1.03-1.10 m, 0.30-0.31 m
+  -- out (a dive there: 0.37 m, and 0.64+ by the time it's low), and that 'dive' pushed the view forward and back
+  -- (report 2026-11-11: snaps on every small drop). Head-drop speed didn't tell them apart (landings 2.7-5.9 m/s)
+  if not dv and S.fall and not S.rising and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) and r < 0.75 and l > 0.3 and (ox * S.fall[1] + oy * S.fall[2]) / l > 0.5 then
+    dv = l > 0.45
+  end
   -- S.diving = the hide switch for this dive's direction, or false
   dv = dv and (S.fall[4] > 0.5 and 'dive_hide' or S.fall[4] < -0.5 and 'dive_hide_back' or 'dive_hide_side')
   -- a dive lasts until you stand (standing height held 0.3 s), so its hiding and forward push hold while you get up
   local seated = S.frv or S.mech or S.empl or S.tank or S.gator or S.pel
   S.up_t = (S.stance == 'stand' or r > 0.8) and (S.up_t or 0) + dt or 0
-  if not dv and S.diving and not seated and S.up_t < 0.3 then dv = S.diving end
+  -- up into a crouch and the head still for 0.3 s: the get-up and its dive are over (they held the view 0.3 m up and
+  -- ahead for 3 s, then dropped it, log 2026-11-11); S.crup = when, until you lie down again
+  S.set_t = S.rising and S.stance == 'crouch' and abs(S.ozv) < 0.2 and (S.set_t or 0) + dt or 0
+  if S.set_t >= 0.3 and not S.crup then S.crup, S.fall, S.dive = S.t, nil, nil; log('settled in a crouch') end
+  if not dv and S.diving and not seated and S.up_t < 0.3 and not S.crup then dv = S.diving end
   -- getting up: risen out of prone, until standing the same way
   S.rise_t = S.rising and (S.rise_t or 0) + (r > 0.5 and dt or 0) or 0
-  if S.stance == 'prone' and oz > 0.1 and not seated and S.rise_t < 3 then S.rising = true elseif seated or S.up_t >= 0.3 or S.rise_t >= 3 then S.rising, S.pidle, S.prone_t = false, nil, 0 end
+  if S.stance == 'prone' and oz > 0.1 and not seated and S.rise_t < 3 then S.rising, S.crup = true, nil elseif seated or S.up_t >= 0.3 or S.rise_t >= 3 or S.crup then S.rising, S.pidle, S.prone_t = false, nil, 0 end
   -- the get-up starts while the head is still low: anything but the animation you settled prone in counts
   -- (log 2026-11-06: head goes 0.73 -> 1.39 m in 0.2 s, the clipping comes before that)
   local an
@@ -1701,18 +1720,25 @@ local function stance(dt, ox, oy, oz, rx, ry)
     an = anim(S.head.u)
     if an ~= S.an then log('anim %s (%s, head %.2f m over feet)', tostring(an), S.stance or 'stand', oz); S.an = an end
     S.prone_t = S.stance == 'prone' and (S.prone_t or 0) + dt or 0
-    if S.prone_t > 0.6 and S.pidle == nil and not GETUP_ANIM[an] then S.pidle = an; log('settled prone, anim %s', tostring(an)) end
+    if S.prone_t > 0.6 and S.pidle == nil and an ~= nil and not GETUP_ANIM[an] then S.pidle = an; log('settled prone, anim %s', tostring(an)) end
   end
-  local gu = S.rising and (r > 0.5 or GETUP_ANIM[an] or S.pidle ~= nil and an ~= S.pidle) or false
+  -- rising from prone into a crouch (anim 11, then 16): the head stays 0.3-0.7 m ahead of the hips all the way, so the
+  -- get-up lift and push have nothing to clear; the lift held the view 0.4 m over the crouched head for ~1.5 s (report
+  -- 2026-11-11). Carrying on up to standing (70-73) brings them back
+  if not S.rising then S.cup = nil elseif an == 11 or an == 16 then S.cup = true elseif GETUP_ANIM[an] or an == 73 then S.cup = nil end
+  local gu = S.rising and (r > 0.5 or GETUP_ANIM[an] or S.pidle ~= nil and an ~= S.pidle and not LIE_ANIM[an]) or false
   if gu ~= (S.getup or false) then S.getup = gu; log('getting up %s', gu and 'start' or 'end') end
-  if dv ~= (S.diving or false) then S.diving = dv; log('dive %s (head %.2f m over feet)', dv or 'end', oz); apply_hiding() end
+  if dv ~= (S.diving or false) then
+    S.diving = dv; log('dive %s (head %.2f m over feet, %.2f m out, dropping %.1f m/s)', dv or 'end', oz, l, -(S.ozv or 0)); apply_hiding()
+    if dv then S.crup = nil end  -- a new dive holds through its own get-up again
+  end
   -- the game can show pieces again mid-dive: re-hide every frame while it lasts
   if dv and V[dv] then S.rehide = max(S.rehide or 0, S.t + 0.2) end
   local cur = S.stance or 'stand'
   local new = cur
   if cur == 'stand' and r < 0.75 or cur == 'prone' and r > 0.5 then new = 'crouch' end
   if r < 0.45 then new = 'prone' elseif r > 0.85 then new = 'stand' end
-  if new ~= cur then S.stance = new; log('stance %s (head %.2f m over feet, tallest %.2f)', new, oz, S.hmax) end
+  if new ~= cur then S.stance = new; log('stance %s (head %.2f m over feet, tallest %.2f, moving %+.1f m/s)', new, oz, S.hmax, S.ozv or 0) end
   local st = STANCES[S.stance or 'stand']
   -- lying (dive or prone) and looking back along your own body: lift the view over the back and the gun on it
   local c = chef.camera()
@@ -1730,7 +1756,13 @@ local function stance(dt, ox, oy, oz, rx, ry)
   -- dives hide the collar and shoulders (see apply_hiding)
   local dh = (S.diving and V[S.diving] and not db) and true or false
   if dh ~= (S.divehide or false) then S.divehide = dh; apply_hiding() end
-  local a = 1 - exp(-dt * 10)
+  -- for 1 s after settling in a crouch the get-up's lift and push glide out over ~0.3 s, not 0.1 s (the body is still,
+  -- so a quick drop showed as the head snapping back into place, 2026-11-11)
+  S.gslow = S.crup and S.t - S.crup < 1 and S.stance == 'crouch'
+  local a = 1 - exp(-dt * (S.gslow and 3 or 10))
+  -- the dive's forward push only before you're down: the face view zeroes it while lying, so it came on at the
+  -- get-up's start and went as you rose (0.26 m forward and back; plain prone get-ups have none and felt fine, 2026-11-11)
+  local rise = min(1, max(0, (0.8 - r) / 0.25))
   -- lying: the lift fades out as you look down (none past ~45 deg down), so looking down at your back never shows the neck
   local dk = S.stance == 'prone' and c and min(1, max(0, 1 - (-c.fz - 0.3) / 0.4)) or 1
   local wf, wu = (st[1] == 0 and 0 or V[st[1]]) + (S.diving and S.diving ~= 'dive_hide_back' and V.dive_fwd * (1 - back) or 0), (st[2] == 0 and 0 or V[st[2]] * dk) + V.back_lift * back * dk + (S.getup and V.getup_cam and V.getup_lift * min(1, max(0, (0.8 - r) / 0.25)) or 0)
@@ -1805,6 +1837,14 @@ local function target(dt)
   if S.prz and dt > 0 and abs(rz - S.prz) < 2 then S.vz = S.vz + ((rz - S.prz) / dt - S.vz) * (1 - exp(-dt * 20)) else S.vz = 0 end
   S.prz = rz
   local ox, oy, oz = hx - rx, hy - ry, hz - rz
+  -- the root jumping alone (0.75 m in one frame, head still, after a dive: log 2026-11-11) is no move of yours: the
+  -- smoothed offset takes the jump at once, so the view stays with the head
+  local lh = S.lhr
+  if S.sm and lh and lh[7] == h.u then
+    local jx, jy, jz = rx - lh[4] - (hx - lh[1]), ry - lh[5] - (hy - lh[2]), rz - lh[6] - (hz - lh[3])
+    if abs(rx - lh[4]) + abs(ry - lh[5]) + abs(rz - lh[6]) > 0.15 and abs(jx) + abs(jy) + abs(jz) > 0.15 then S.sm[1], S.sm[2], S.sm[3] = S.sm[1] - jx, S.sm[2] - jy, S.sm[3] - jz end
+  end
+  S.lhr = { hx, hy, hz, rx, ry, rz, h.u }
   -- lying on your back, whatever got you there (backward or side dive, rolling over)
   local bu = (S.diving or S.stance == 'prone' or not S.bsign) and belly_up(h)
   local ob = (S.diving or S.stance == 'prone') and bu and (S.onback and bu > 0.3 or bu > 0.5) or false
@@ -1837,16 +1877,20 @@ local function target(dt)
   -- snaps (a max() with a shrinking distance jumped 0.5 m in one frame, 2026-11-07). S.ga = the clamp's reach now
   -- get-ups only: in a backward dive the head ends 0.7 m behind the hips, so letting go at lying slid the view back
   -- through the chest (black screen, log 2026-11-07)
-  local low = V.getup_cam and S.getup and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel)
+  local low = V.getup_cam and S.getup and not S.cup and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel)
   local want = low and V.getup_ahead * rise or 0
-  if low then S.gw, S.gr = 1, want else S.gw = (S.gw or 0) * exp(-dt * 10) end
+  if low then S.gw, S.gr = 1, want else S.gw = (S.gw or 0) * exp(-dt * (S.gslow and 3 or 10)) end
   S.ga = S.gw * (S.gr or 0)
   local c0 = S.ga > 0.005 and chef.camera()
+  if not c0 then S.gpush = 0 end
   local h0 = c0 and sqrt(c0.fx * c0.fx + c0.fy * c0.fy) or 0
   if h0 > 1e-4 then
     local ux, uy = c0.fx / h0, c0.fy / h0
     local f, sd = ox * ux + oy * uy, ox * uy - oy * ux
-    f = f + S.gw * (max(f, S.gr) - f)
+    -- the push grows at most 8 m/s (shrinks at once): switched on in one frame it jumped the view 0.6-0.67 m when a
+    -- get-up started looking back or from your back (log 2026-11-11)
+    S.gpush = min(S.gw * max(0, S.gr - f), (S.gpush or 0) + 8 * dt)
+    f = f + S.gpush
     ox, oy = f * ux + sd * uy, f * uy - sd * ux
   end
   if S.eyes then
@@ -1993,6 +2037,7 @@ local function target(dt)
   S.ty = ry + S.sm[2] + bby + uy * f - ux * sd + vy * vf - vx * vs + fy * cl
   S.tz = rz + S.sm[3] + bbz + up
   S.trx, S.try, S.trz = rx, ry, rz  -- the root this view was built from (the draw pass moves it along)
+  S.thx, S.thy, S.thz = hx, hy, hz
 end
 
 -- the game's own camera rotation this frame: the one we wrote last frame (k.last) is still ours, anything else is the
@@ -2725,12 +2770,22 @@ local function place(w)
         -- lying or diving the floor squeezes it in and out frame to frame and the aim fix turned the view with it
         -- (aiming on your back looking down-right, 2026-11-09): hold its offset from the root steady there (0.15 s)
         local rx, ry, rz = S.trx, S.try, S.trz
-        if rx and (S.diving or S.stance == 'prone') then
-          local o, g = S.go, 1 - exp(-(S.dt or 0) / 0.15)
-          if not o then o = { cx - rx, cy - ry, cz - rz }; S.go = o end
+        -- held only lying still: letting go in one frame turned the view 1-6 deg as a get-up went on (log 2026-11-11),
+        -- so from the get-up on it glides back to the live camera (0.05 s) and is dropped once there
+        -- settled only (S.pidle): in a dive, a fall that knocks you over or a landing it trailed the game camera by up
+        -- to 3 m and the crosshair turned with it (log 2026-11-11)
+        local hold = S.stance == 'prone' and S.pidle ~= nil and not S.getup
+        if rx and (hold or S.go) then
+          -- timed by the clock, not S.dt: the game moves its camera between update and draw, so this mostly runs in the
+          -- draw pass, where S.dt is 0 (the hold never moved, and 1.2.20's glide back never got there: 7.9 m off)
+          local o = S.go
+          if not o then o = { cx - rx, cy - ry, cz - rz, t = S.t }; S.go = o end
+          local g = 1 - exp(-(S.t - o.t) / (hold and 0.15 or 0.05))
+          o.t = S.t
           o[1], o[2], o[3] = o[1] + (cx - rx - o[1]) * g, o[2] + (cy - ry - o[2]) * g, o[3] + (cz - rz - o[3]) * g
-          S.gcx, S.gcy, S.gcz = rx + o[1], ry + o[2], rz + o[3]
-        else S.go = nil end
+          S.golag = abs(cx - rx - o[1]) + abs(cy - ry - o[2]) + abs(cz - rz - o[3])
+          if not hold and S.golag < 0.01 then S.go = nil else S.gcx, S.gcy, S.gcz = rx + o[1], ry + o[2], rz + o[3] end
+        else S.go, S.golag = nil, 0 end
       end
       if state == 'far' and mfx and mx then
         -- take it only when the mech frame puts it where the game shows the view (so it is the mech's camera)
@@ -3987,6 +4042,15 @@ local function render_step()
   if x then
     local dx, dy, dz = x - S.trx, y - S.try, z - S.trz
     warp_check(dx, dy, dz)  -- same body as this frame's update, so the shift is exact even for a warp
+    -- the root jumping alone (head still) flashed the view 0.77 m for a frame (log 2026-11-11): carry the head's move
+    local hx, hy, hz
+    if S.thx then hx, hy, hz = chef.unit_position(h.u, h.node) end
+    if hx then
+      local ex, ey, ez = hx - S.thx, hy - S.thy, hz - S.thz
+      -- (only the root jumping: the head pops 8-11 cm by itself as a get-up starts, and carrying that flashed the view)
+      if abs(dx) + abs(dy) + abs(dz) > 0.1 and abs(dx - ex) + abs(dy - ey) + abs(dz - ez) > 0.1 then dx, dy, dz = ex, ey, ez end
+      S.thx, S.thy, S.thz = hx, hy, hz
+    end
     S.tx, S.ty, S.tz = S.tx + dx, S.ty + dy, S.tz + dz
     S.trx, S.try, S.trz = x, y, z
   end
