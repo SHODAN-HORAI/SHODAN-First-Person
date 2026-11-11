@@ -337,7 +337,7 @@ local TABS = {
     { id = 'profile_key', label = 'Next profile', key = true, def = 'off',
       hint = 'Switches to the next of the five profiles. Press RIGHT, then the new key. DELETE sets none.' },
     { id = 'reset_key', label = 'Reset camera', key = true, def = 'off',
-      hint = 'Hands the camera back, forgets your Helldiver and finds it again (first person stays on or off). For a wrong pick or a stuck view.' },
+      hint = 'Hands the camera back and finds your Helldiver again (first person stays on or off). For a stuck view; alone in a mission, also a wrong pick.' },
     { head = 'CONTROLLER' },
     { id = 'pad_toggle', label = 'Controller: first person on/off', key = true, def = 'off',
       hint = 'A controller button: bind it in the loader options (this panel takes keyboard keys). Press: first person on or off. Hold 1 s: reset camera.' },
@@ -525,7 +525,8 @@ local function anim(u, all)
   local has, why = call('Unit.has_animation_state_machine', u)
   if has == false then
     if S.head and u == S.head.u and not S.dead and chef.in_mission() then S.dead = true; log('the body has no animation left (dead): game camera') end
-    if S.head and u == S.head.u and S.dead then S.dsure = 'anim' end  -- certain: the body's animation is gone
+    -- certain: the body's animation is gone. It's the corpse from now on (never picked, never 'up' again)
+    if S.head and u == S.head.u and S.dead then S.dsure, S.corpse = 'anim', u end
     return nil
   end
   -- the check itself refused: still never ask a body that's down
@@ -1069,7 +1070,7 @@ local function scan_done(near)
   if not c then return end
   local best, bd = nil, 6
   -- ship: your Helldiver (S.mine) while it's there, never a teammate's (nothing on the ship gives you a new one)
-  local gate = others_here() and not drop_seen() and not (S.repick and S.t < S.repick and not S.dead)
+  local gate = others_here() and not drop_seen()
     or not chef.in_mission() and S.mine ~= nil and chef.unit_alive(S.mine)
   -- right after your drop: your Helldiver is the one that came down with the pod (30+ m below its highest point;
   -- it exists from the mission load, 2026-11-07 log), so a teammate standing where you land is never taken. None
@@ -1107,11 +1108,17 @@ local function scan_done(near)
       S.avfollow = {}
       S.drop_t = nil
     end
-    S.mine, S.repick, S.prev_mine = best.u, nil, nil
+    S.mine = best.u
     S.head = { u = best.u, node = best.node, root = chef.unit_node(best.u, 'root') or 1 }
     S.hmax, S.stance, S.down, S.rising, S.pidle = nil, nil, false, false, nil
-    local b = S.body_kept                            -- the same body after a restart: its stance as it was
-    if b and b.u == best.u then S.hmax, S.stance, S.down = b.hmax, b.stance, b.down or false end
+    -- the same body after a restart: its tallest as measured (a prone body would read as standing at its own height),
+    -- and prone or down only while it's still lying now (it may have got up since the restart)
+    local b = S.body_kept
+    if b and b.u == best.u and b.hmax and b.hmax > 0 then
+      S.hmax = b.hmax
+      local hz, fz = select(3, upos(best.u, best.node)), select(3, upos(best.u, S.head.root))
+      if hz and fz and (hz - fz) / b.hmax < 0.45 then S.stance, S.down = b.stance, b.down or false end
+    end
     S.body_kept = nil
     S.rescans = { S.t + 5, S.t + 15 }                -- pieces that load late
   end
@@ -2103,8 +2110,9 @@ local function place(w)
       local cam = (S.fv or k.fov0) and cam_of(k)
       if cam and S.fv then
         k.fov0 = k.fov0 or call('Camera.vertical_fov', cam)
-        call('Camera.set_vertical_fov', cam, math.rad(S.fv))
-      elseif cam then call('Camera.set_vertical_fov', cam, k.fov0); k.fov0 = nil end
+        k.fvw = math.rad(S.fv)
+        call('Camera.set_vertical_fov', cam, k.fvw)
+      elseif cam then call('Camera.set_vertical_fov', cam, k.fov0); k.fov0, k.fvw = nil, nil end
     end
     return
   end
@@ -2856,33 +2864,27 @@ local function user_toggle()
   if S.keep ~= nil then S.keep = S.on end
   say(S.on and 'FIRST PERSON ON' or 'FIRST PERSON OFF')
 end
--- what a restart in the same world carries (the reset key, or an error the mod got over), by one rule: never forget
--- which Helldiver is yours unless it's safe to pick again.
---   error recovery: everything (your Helldiver, a death as it stood)
---   reset while alive: your Helldiver forgotten (the key is for a wrong pick), so the restart may pick whatever the
---     multiplayer gate says for 5 s; nothing picked by then (the camera away from every head), the one from before
---   reset while dead: the death as it stood, and no repick (the spectator camera follows a teammate; the
---     reinforcement's drop allows the pick). Certain (the animation gone): the body is a corpse, never picked again.
---     A guess (the cameras changing while lying): your Helldiver kept, so it's picked again while lying (the game
---     camera: dead) and standing up ends the guess; a real death turns certain once the animation goes
-local function carry(keep_mine)
-  local mine = S.mine or S.prev_mine           -- (a reset still waiting for its pick: the one from before it)
+-- what a restart in the same world carries (the reset key, or an error the mod got over): your Helldiver is never
+-- forgotten, except for a death known for certain (the animation gone: the body is a corpse, and the reinforcement's
+-- drop picks the next). A forgotten Helldiver let the restart take whichever head was nearest the camera: in
+-- multiplayer the teammate it followed. Alone in a mission the nearest is picked anyway (no teammate to take).
+--   a death as it stood: certain, a corpse never picked again; a guess (the cameras changing while lying), your
+--     Helldiver picked again while lying (the game camera: dead), and standing up ends the guess
+--   the drop in progress (one drop per fall, the bodies followed down), and the body's stance as measured
+local function carry()
   local certain = S.dead and S.dsure == 'anim'
   local c = { w = chef.world_id(), dead = S.dead or false, dsure = S.dead and S.dsure or nil, drop_t = S.drop_t,
-    corpse = S.corpse or (certain and S.head and S.head.u) or nil }
-  -- the body's stance as measured (its tallest seen, prone, down): picked again, a prone body would otherwise read as
-  -- standing at its own height, and a carried guess would end at once
+    drop_held = S.drop_held, avtop = S.avtop,
+    avfollow = S.avfollow, corpse = (certain and S.head and S.head.u) or S.corpse,
+    mine = not certain and S.mine or nil }
   if S.head then c.body = { u = S.head.u, hmax = S.hmax, stance = S.stance, down = S.down } end
-  if keep_mine then c.mine = mine
-  elseif S.dead then c.mine = not certain and mine or nil
-  else c.prev, c.repick = mine, true end
   S.carry = c
 end
 local function reset_camera(why)
   local was = keep_as()
   -- a second reset before the re-pick: the first one's on/off (still waiting: off, and not started)
   if was == nil and S.keep ~= nil and S.keep_w == chef.world_id() then was = S.keep end
-  carry(false)
+  carry()
   set_on(false, true)
   S.world, S.keep, S.keep_w = nil, was, chef.world_id()
   log('camera reset (%s)', why)
@@ -2953,17 +2955,13 @@ local function step(dt)
     local c = S.carry
     if c and c.w == S.world then
       S.dead, S.dsure, S.drop_t, S.corpse, S.mine = c.dead, c.dsure, c.drop_t, c.corpse, c.mine
-      S.prev_mine, S.repick, S.body_kept = c.prev, c.repick and S.t + 5 or nil, c.body
+      S.drop_held, S.avtop, S.avfollow, S.body_kept = c.drop_held, c.avtop, c.avfollow, c.body
     else
-      S.repick, S.prev_mine, S.body_kept = nil, nil, nil
+      S.body_kept = nil
     end
     S.carry = nil
   end
   S.t, S.fno = S.t + dt, (S.fno or 0) + 1
-  if S.repick and S.t >= S.repick then
-    if not S.mine and S.prev_mine and chef.unit_alive(S.prev_mine) then S.mine = S.prev_mine end
-    S.repick, S.prev_mine = nil, nil
-  end
   -- the game camera falling 25+ m/s for 0.25 s = a hellpod coming down (a single-frame jump is a camera cut; 12+ m/s
   -- is kept for the camera following a body down)
   local gc = chef.camera()
@@ -3100,8 +3098,10 @@ local function step(dt)
     or (S.act and S.aim and (V.aim_zoom > 0 or not V.aim_zoom_game) and S.ghip) or 0
   if mag ~= 1 and base > 0 then base = 2 * math.deg(math.atan(math.tan(math.rad(base) / 2) * mag)) end
   local want = (S.act or S.bw > 0) and (S.aim and V.aim_fov > 0 and V.aim_fov or base * extra) or vf
-  if want > 0 then S.fv = S.fv and S.fv + (want - S.fv) * (1 - exp(-dt * 14)) or want
-  elseif S.fv and S.act and S.gfov then
+  -- (nothing written yet at Field of view GAME: the zoom starts from the game's own, not in one jump)
+  local from = S.fv or (S.act and V.fov == 0 and vf == 0 and S.gfov)
+  if want > 0 then S.fv = from and from + (want - from) * (1 - exp(-dt * 14)) or want
+  elseif S.fv and (S.act or S.bw > 0) and S.gfov then
     -- nothing of ours to write any more (Field of view at GAME, aim let go): back out to the game's own, eased as the
     -- zoom came in, then handed back
     S.fv = S.fv + (S.gfov - S.fv) * (1 - exp(-dt * 14))
@@ -3160,7 +3160,7 @@ local function recover(hook, err)
   S.draw, REC.live = nil, false
   local was = keep_as()
   if P.open then pcall(open_panel, false) end
-  pcall(carry, true)
+  pcall(carry)
   if not pcall(set_on, false, true) then
     -- the hand-back itself raised: each part on its own, before the restart forgets the cameras and the hidden lists
     pcall(hand_back)
