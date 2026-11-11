@@ -23,15 +23,19 @@ local FRV_KINDS, FRV_PRE = {}, {}
 local FRV_GUN = {}
 for _, f in ipairs(FRVS) do FRV_KINDS[f.kind] = true; FRV_PRE[f.kind] = f.pre; FRV_GUN[f.kind] = not f.nogun end
 FRV_KINDS['0df7e312f561f8b9'], FRV_PRE['0df7e312f561f8b9'], FRV_GUN['0df7e312f561f8b9'] = true, 'fl_', true
--- each exosuit / emplacement has its own settings too (bodies only; arms are other units of the same mech)
-local MECHS = { { kind = '79e4b3d2da5e45e3', name = 'PATRIOT', pre = '' }, { kind = 'c2d449ecf7facab1', name = 'EMANCIPATOR', pre = 'em_' },
-  { kind = '35dbf54f016f3624', name = 'BREAKTHROUGH', pre = 'bt_' }, { kind = '7b2326f6fd9c8069', name = 'LUMBERER', pre = 'lb_' } }
+-- each exosuit / emplacement has its own settings too. Every exosuit has the same body (combat_walker), so only
+-- the Patriot entry carries the body kind; the model comes from the arms (MECH_ARMS, the game's mount data)
+local MECHS = { { kind = '79e4b3d2da5e45e3', name = 'PATRIOT', pre = '' }, { name = 'EMANCIPATOR', pre = 'em_' },
+  { name = 'BREAKTHROUGH', pre = 'bt_' }, { name = 'LUMBERER', pre = 'lb_' } }
 local EMPLS = { { kind = '0e977c49db7604f9', name = 'HMG', pre = '' }, { kind = '2b11c9e4980ec479', name = 'ANTI-TANK', pre = 'at_' } }
 local PRE = {}
-for _, l in ipairs({ MECHS, EMPLS }) do for _, m in ipairs(l) do PRE[m.kind] = m.pre end end
-local MECH_KINDS = {}                                         -- content/fac_helldivers/vehicles/combat_walker*
-for _, k in ipairs({ '79e4b3d2da5e45e3', '17c5d12d8d5dee2c', '35dbf54f016f3624', 'df51fe8d62f294be', '0736bee2d6328726',
-  '7b2326f6fd9c8069', 'a526dc7d89ff696d', '824b7e0c4c879eb5', 'c2d449ecf7facab1', '65489809a8181b96' }) do MECH_KINDS[k] = true end
+for _, l in ipairs({ MECHS, EMPLS }) do for _, m in ipairs(l) do if m.kind then PRE[m.kind] = m.pre end end end
+local MECH_ARMS = { ['824b7e0c4c879eb5'] = '', ['08f6089289c83d22'] = '',          -- Patriot: rockets, minigun
+  ['e5f64dcc3bfe9dd1'] = 'em_', ['ff9878576a4c543b'] = 'em_',                       -- Emancipator: two autocannons
+  ['65489809a8181b96'] = 'bt_', ['df51fe8d62f294be'] = 'bt_',                       -- Breakthrough: shield, flak cannon
+  ['0736bee2d6328726'] = 'lb_', ['17c5d12d8d5dee2c'] = 'lb_' }                      -- Lumberer: flamethrower, AT cannon
+local MECH_KINDS = { ['79e4b3d2da5e45e3'] = true, ['a526dc7d89ff696d'] = true }  -- content/fac_helldivers/vehicles/combat_walker*
+for k in pairs(MECH_ARMS) do MECH_KINDS[k] = true end
 -- hellpod/manned_turret (HMG), antitank_emplacement: how close your feet are to its base while you man it
 -- AT: seated 1.25 m, on top of it 0.2-0.8 m, walking past 1.5 m or more (log, 2026-11-06)
 local EMPL_DIST = { ['0e977c49db7604f9'] = { 0, 1.2 }, ['2b11c9e4980ec479'] = { 0.95, 1.45 } }
@@ -403,7 +407,7 @@ local TABS = {
     { head = 'MECH' },
     { id = 'mech_pick', global = true, label = 'Mech model to edit', min = 1, max = #MECHS, step = 1, def = 1,
       hint = 'Pick the exosuit the mech rows below change. Each exosuit keeps its own settings.' },
-    { id = 'tp_mech', label = 'Third person in a mech', toggle = true, def = true,
+    { id = 'tp_mech', label = 'Third person in a mech', toggle = true, def = false,
       hint = 'Switches to the game\'s camera while you pilot an exosuit. Off = first person with the offsets below.' },
     { id = 'mech_fov', label = 'Field of view', min = 0, max = 120, step = 1, def = 0, unit = ' deg', zero = 'SAME',
       hint = 'Up-down view angle in a mech, first or third person. SAME = the normal field of view (in third person the game default).' },
@@ -1680,13 +1684,13 @@ local SEAT = { driver = { 'frv_fwd', 'frv_up', 'frv_side' }, passenger = { 'frvp
   gator = { 'gdrv_fwd', 'gdrv_up', 'gdrv_side' }, ggun = { 'ggun_fwd', 'ggun_up', 'ggun_side' } }
 
 -- manning an emplacement: your feet stay within 1.2 m of its base (the head isn't inside its box)
--- the exosuit's settings prefix: its body's, or the nearest body's when the head sits in an arm's box
+-- the exosuit's settings prefix: from the arm whose box holds the head, else the arm nearest the body (within 6 m)
 local function mech_model(it)
-  if PRE[it.kind] then return PRE[it.kind] end
-  local best, pre = 99, ''
+  if MECH_ARMS[it.kind] then return MECH_ARMS[it.kind] end
+  local best, pre = 6, ''
   for _, o in ipairs(mech_watch.items) do
-    local d = PRE[o.kind] and abs(o.x - it.x) + abs(o.y - it.y)
-    if d and d < best then best, pre = d, PRE[o.kind] end
+    local d = MECH_ARMS[o.kind] and abs(o.x - it.x) + abs(o.y - it.y)
+    if d and d < best then best, pre = d, MECH_ARMS[o.kind] end
   end
   return pre
 end
@@ -4579,7 +4583,11 @@ local function step(dt)
     S.mech_pre = mech and mech_model(mech) or ''
     S.mech_it = mech or false
     mech = mech and mech.unit or false
-    if mech ~= S.mech then log(mech and 'in a mech' or 'out of the mech') end
+    if mech ~= S.mech then
+      local nm = '?'
+      for _, m in ipairs(MECHS) do if m.pre == S.mech_pre then nm = m.name end end
+      if mech then log('in a mech (%s)', nm) else log('out of the mech') end
+    end
     S.mech, S.empl = mech, at_emplacement()
   end
   -- after a reset (the key, or an error the mod got over): first person as it was, whatever Start on says
