@@ -1069,7 +1069,7 @@ local function scan_done(near)
   if not c then return end
   local best, bd = nil, 6
   -- ship: your Helldiver (S.mine) while it's there, never a teammate's (nothing on the ship gives you a new one)
-  local gate = others_here() and not drop_seen() and not S.repick
+  local gate = others_here() and not drop_seen() and not (S.repick and S.t < S.repick)
     or not chef.in_mission() and S.mine ~= nil and chef.unit_alive(S.mine)
   -- right after your drop: your Helldiver is the one that came down with the pod (30+ m below its highest point;
   -- it exists from the mission load, 2026-11-07 log), so a teammate standing where you land is never taken. None
@@ -2769,6 +2769,8 @@ end
 
 local function panel_keys(dt)
   local list = rows()
+  -- a Ctrl held for one capture is never bound by another (a tab or another row's key clicked while holding it)
+  if P.capfor ~= P.capture then P.capmod, P.capfor = nil, P.capture end
   if P.capture then
     if chef.key_pressed('delete') then chef.set(P.capture, 'off'); P.capture, P.capmod = nil, nil; return end
     -- with the loader's key combos (1.4.0): the modifiers held bind a combo (Ctrl+Shift+F6); Ctrl or Alt pressed and
@@ -2852,9 +2854,10 @@ local function carry(keep_mine)
   -- 'corpse' never picked again. The reset key's restart may pick once whatever the multiplayer gate says, as after
   -- a drop: it forgot which Helldiver is yours
   local sure = S.dead and S.dsure or false
+  -- (dead, no repick: the spectator camera follows a teammate, and the reinforcement's drop allows the pick)
   S.carry = { w = chef.world_id(), dead = sure, dsure = sure or nil, drop_t = S.drop_t,
     corpse = S.corpse or (sure and S.head and S.head.u) or nil, mine = keep_mine and S.mine or nil,
-    repick = not keep_mine }
+    repick = not keep_mine and not S.dead }
 end
 local function reset_camera(why)
   local was = keep_as()
@@ -2928,7 +2931,7 @@ local function step(dt)
     local c = S.carry
     if c and c.w == S.world then
       S.dead, S.dsure, S.drop_t, S.corpse, S.mine = c.dead, c.dsure, c.drop_t, c.corpse, c.mine
-      S.repick = c.repick
+      S.repick = c.repick and S.t + 5 or nil  -- the repick: 5 s (the camera is behind you now)
     else
       S.repick = nil
     end
@@ -2943,7 +2946,8 @@ local function step(dt)
     S.fall_t = (vz < -12 and vz > -150) and (S.fall_t or 0) + dt or 0
     S.pfall_t = (vz < -25 and vz > -150) and (S.pfall_t or 0) + dt or 0
     S.calm_t = vz > -12 and (S.calm_t or 0) + dt or 0
-    if S.fall_t >= 0.25 and not drop_seen() then
+    -- (12 m/s was also a 15 m ledge, yours or a spectated teammate's: it opened the multiplayer pick for 30 s)
+    if S.pfall_t >= 0.25 and not drop_seen() then
       S.drop_t = S.t
       if others_here() then log('hellpod drop seen (game camera falling %.0f m/s)', -vz) end
     end
@@ -3050,16 +3054,22 @@ local function step(dt)
   if S.gfov and not S.aim and (not S.ghip or S.unaim_t >= 0.6) then
     S.ghip = S.ghip and S.ghip + (S.gfov - S.ghip) * (1 - exp(-dt * 2)) or S.gfov
   end
-  local zoom = 1
+  -- the game's aim zoom as a magnification: tan(half its aim angle) over tan(half its hip angle), applied the same way
+  -- to ours, so a wide view zooms as much as the game's does (a share of the angle zoomed a 100 deg view far more).
+  -- Extra aim zoom then narrows the angle by its percentage
+  local mag, extra = 1, 1
   if S.act and S.aim and V.aim_fov == 0 then
-    if V.aim_zoom_game and S.gfov and S.ghip and S.ghip > 1 then zoom = max(0.15, min(1.2, S.gfov / S.ghip)) end
-    zoom = zoom * (1 - V.aim_zoom / 100)
+    if V.aim_zoom_game and S.gfov and S.ghip and S.ghip > 1 then
+      mag = max(0.15, min(1.2, math.tan(math.rad(S.gfov) / 2) / math.tan(math.rad(S.ghip) / 2)))
+    end
+    extra = 1 - V.aim_zoom / 100
   end
   -- Field of view at GAME: nothing written, except while aiming with a zoom of our own (Extra aim zoom, or not
   -- following the game's): then from the game's hip field of view
   local base = vf > 0 and vf or V.fov > 0 and V.fov
     or (S.act and S.aim and (V.aim_zoom > 0 or not V.aim_zoom_game) and S.ghip) or 0
-  local want = (S.act or S.bw > 0) and (S.aim and V.aim_fov > 0 and V.aim_fov or base * zoom) or vf
+  if mag ~= 1 and base > 0 then base = 2 * math.deg(math.atan(math.tan(math.rad(base) / 2) * mag)) end
+  local want = (S.act or S.bw > 0) and (S.aim and V.aim_fov > 0 and V.aim_fov or base * extra) or vf
   if want > 0 then S.fv = S.fv and S.fv + (want - S.fv) * (1 - exp(-dt * 14)) or want else S.fv = nil end
   hide_guns()
   place(w)
