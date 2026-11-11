@@ -338,6 +338,11 @@ local TABS = {
       hint = 'Switches to the next of the five profiles. Press RIGHT, then the new key. DELETE sets none.' },
     { id = 'reset_key', label = 'Reset camera', key = true, def = 'off',
       hint = 'Hands the camera back, forgets your Helldiver and finds it again (first person stays on or off). For a wrong pick or a stuck view.' },
+    { head = 'CONTROLLER' },
+    { id = 'pad_toggle', label = 'Controller: first person on/off', key = true, def = 'off',
+      hint = 'A controller button: bind it in the loader options (this panel takes keyboard keys). Press: first person on or off. Hold 1 s: reset camera.' },
+    { id = 'pad_hold', label = 'Controller: hold with it', key = true, def = 'off',
+      hint = 'Set, the button above counts only while this one is held, and on a double tap (as LT + double-tap down: the D-pad also enters stratagems).' },
     { head = 'PANEL' },
     { id = 'panel', label = 'Open this panel', key = true, def = 'f10', hint = 'Press RIGHT, then the new key. DELETE sets none.' },
     { id = 'tab_prev', label = 'Previous tab', key = true, def = 'a', hint = 'Moves to the tab on the left. Press RIGHT, then the new key.' },
@@ -2430,16 +2435,18 @@ local function update_act()
 end
 
 ---------------------------------------------------------------------------------------------------- panel
-local P = { open = false, tab = 1, row = 1, cx = 0, cy = 0, capture = nil, rep = 0, drag = nil }
+local P = { open = false, tab = 1, row = 1, cx = 0, cy = 0, capture = nil, capmod = nil, rep = 0, drag = nil }
 local CAPTURE_KEYS = {}
 for i = 1, 12 do CAPTURE_KEYS[#CAPTURE_KEYS + 1] = 'f' .. i end
 for c in ('abcdefghijklmnopqrstuvwxyz0123456789'):gmatch('.') do CAPTURE_KEYS[#CAPTURE_KEYS + 1] = c end
 for _, k in ipairs({ 'insert', 'home', 'end', 'page up', 'page down', 'tab', 'caps lock', 'left alt', 'right alt',
   'left ctrl', 'right ctrl', 'numpad 0', 'numpad 1', 'numpad 2', 'numpad 3', 'numpad 4', 'numpad 5', 'numpad 6',
   'numpad 7', 'numpad 8', 'numpad 9' }) do CAPTURE_KEYS[#CAPTURE_KEYS + 1] = k end
+local CAPTURE_MOD = { ['left ctrl'] = true, ['right ctrl'] = true, ['left alt'] = true, ['right alt'] = true }
+local COMBO_MODS = { 'ctrl', 'shift', 'alt' }   -- the loader's order
 
 local function open_panel(on)
-  P.open, P.capture, P.drag, S.panel = on, nil, nil, on
+  P.open, P.capture, P.capmod, P.drag, S.panel = on, nil, nil, nil, on
   if chef.hold_mouse then chef.hold_mouse(on) end
   if on then local sw, sh = chef.screen(); P.cx, P.cy = sw / 2, sh / 2 end
 end
@@ -2705,10 +2712,25 @@ end
 local function panel_keys(dt)
   local list = rows()
   if P.capture then
-    if chef.key_pressed('delete') then chef.set(P.capture, 'off'); P.capture = nil; return end
+    if chef.key_pressed('delete') then chef.set(P.capture, 'off'); P.capture, P.capmod = nil, nil; return end
+    -- with the loader's key combos (1.4.0): the modifiers held bind a combo (Ctrl+Shift+F6); Ctrl or Alt pressed and
+    -- let go with no key between binds it on its own. Without them, every key binds as it's pressed.
+    local combos = chef.has and chef.has('bind_combos')
     for _, k in ipairs(CAPTURE_KEYS) do
-      if chef.key_pressed(k) then chef.set(P.capture, k); P.capture = nil; return end
+      if chef.key_pressed(k) then
+        if combos and CAPTURE_MOD[k] then P.capmod = k
+        else
+          local pre = ''
+          if combos then
+            for _, m in ipairs(COMBO_MODS) do
+              if chef.key_down('left ' .. m) or chef.key_down('right ' .. m) then pre = pre .. m .. '+' end
+            end
+          end
+          chef.set(P.capture, pre .. k); P.capture, P.capmod = nil, nil; return
+        end
+      end
     end
+    if P.capmod and not chef.key_down(P.capmod) then chef.set(P.capture, P.capmod); P.capture, P.capmod = nil, nil end
     return
   end
   if chef.key_pressed('up') then P.row = skip_heads(list, P.row > 0 and P.row - 1 or #list, -1) end
@@ -2762,6 +2784,34 @@ local function reset_camera(why)
   set_on(false, true)
   S.world, S.keep = nil, was
   log('camera reset (%s)', why)
+end
+
+-- the controller toggle (KEYS tab): with no hold button a press of Controller: first person on/off toggles; with one,
+-- a double tap (the second within 0.35 s) while it's held. Either held 1 s (the second press of a double tap): reset
+-- camera instead. It fires on letting go, so a hold never toggles first.
+local PADT = { was = false, dwas = false, t0 = 0, tap = -1, armed = false, fired = false }
+local function pad_step()
+  local b, h = binds.pad_toggle, binds.pad_hold
+  if not b or b.key() == 'off' then PADT.was, PADT.dwas, PADT.armed = false, false, false; return end
+  local d = b.down()
+  local active = d
+  if h and h.key() ~= 'off' then
+    local held = h.down()
+    if not held then PADT.tap, PADT.armed = -1, false end
+    d = d and held
+    if d and not PADT.dwas then
+      if S.t - PADT.tap < 0.35 then PADT.armed, PADT.tap = true, -1 else PADT.tap = S.t end
+    end
+    if not d then PADT.armed = false end
+    PADT.dwas = d
+    active = d and PADT.armed
+  end
+  if active and not PADT.was then PADT.t0, PADT.fired = S.t, false end
+  if active and not PADT.fired and S.t - PADT.t0 >= 1 then
+    PADT.fired = true; reset_camera('controller hold'); say('CAMERA RESET')
+  end
+  if not active and PADT.was and not PADT.fired then set_on(not S.on); say(S.on and 'FIRST PERSON ON' or 'FIRST PERSON OFF') end
+  PADT.was = active
 end
 
 local function step(dt)
@@ -2866,6 +2916,7 @@ local function step(dt)
     S.keep = nil
   elseif V.start_on and not S.started and S.head then S.started = true; set_on(true) end
   if not busy and binds.toggle and binds.toggle.pressed() then set_on(not S.on); say(S.on and 'FIRST PERSON ON' or 'FIRST PERSON OFF') end
+  if not busy then pad_step() end
   if not busy and binds.profile_key and binds.profile_key.pressed() then
     set('profile', V.profile % 5 + 1); apply_hiding(); say('PROFILE ' .. V.profile)
   end
