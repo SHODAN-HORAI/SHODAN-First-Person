@@ -470,7 +470,8 @@ local S = { on = false, cams = {}, head = nil, look = 0, bw = 0, shown = false, 
 local nodes_n, nodes_t = {}, nil
 local function finite(n) return type(n) == 'number' and n == n and n > -math.huge and n < math.huge end
 -- a position that isn't a number (NaN or infinite: a body mid-teardown, a bad frame) is never used: upos gives nil
--- and marks the frame (S.badpos), so the head is kept and first person holds where it was this frame
+-- and marks the unit for this frame (bad_now), so the head is kept and first person holds where it was this frame
+local function bad_now(u) return S.badpos == S.fno and S.badu == u end
 local function upos(u, i)
   if i and i ~= 1 then
     if nodes_t ~= S.t then nodes_n, nodes_t = {}, S.t end
@@ -483,7 +484,7 @@ local function upos(u, i)
   end
   local x, y, z = chef.unit_position(u, i)
   if x ~= nil and not (finite(x) and finite(y) and finite(z)) then
-    S.badpos = S.t
+    S.badpos, S.badu = S.fno, u
     if not S.said.badpos then S.said.badpos = true; log('a position came back not a number: that frame is skipped') end
     return nil
   end
@@ -996,6 +997,12 @@ local function hide_guns()
   for u in pairs(S.ghid) do if not want[u] then if chef.unit_alive(u) then gun_meshes(u, nil, false) else S.ghid[u] = nil end end end
   for u, list in pairs(want) do gun_meshes(u, list, true) end
 end
+-- every gun we hid shown again at once (the mod stopping, the reset key, an error): the start-again that follows
+-- forgets S.ghid, and a mesh we hid reads as hidden, so nothing would ever show it again
+local function show_guns()
+  for u in pairs(S.ghid) do if chef.unit_alive(u) then gun_meshes(u, nil, false) end end
+  S.ghid = {}
+end
 -- per unit kind, kept across missions (one resource = one skeleton, one set of meshes): its first bone of BONES and
 -- node index (false: none), and which of a row's mesh names it has
 local bone_of, groups_of = {}, {}
@@ -1181,7 +1188,7 @@ local function check_player(w)
       local x, y, z = upos(h.u, h.node)
       -- ship: kept while it's there (the cutscene camera framing a teammate's pod made the old check let go and
       -- take the teammate's Helldiver); S.away hands the view to the game instead
-      lost = (not x and S.badpos ~= S.t) or (x and chef.in_mission() and not ours and not S.galaxy and c and (x - c.x) ^ 2 + (y - c.y) ^ 2 + (z - c.z) ^ 2 > 36)
+      lost = (not x and not bad_now(h.u)) or (x and chef.in_mission() and not ours and not S.galaxy and c and (x - c.x) ^ 2 + (y - c.y) ^ 2 + (z - c.z) ^ 2 > 36)
     end
     if lost then
       if S.dead or S.down_any then
@@ -1565,7 +1572,7 @@ local function target(dt)
   local h = S.head
   local hx, hy, hz = upos(h.u, h.node)
   local rx, ry, rz = upos(h.u, h.root)
-  if not (hx and rx) then if S.badpos ~= S.t then S.head = nil end; return end
+  if not (hx and rx) then if not bad_now(h.u) then S.head = nil end; return end
   if S.prx and S.prz and S.wu == h.u then warp_check(rx - S.prx, ry - S.pry, rz - S.prz) end
   S.wu = h.u  -- a new body (reinforced) is no warp
   -- rising speed, eased over 0.05 s (a single-frame jump is a respawn or teleport)
@@ -1774,8 +1781,8 @@ local function corpse(it)
   if has == nil then return false end  -- the call failed: no verdict
   local seen = S.asm
   if not seen then seen = {}; S.asm = seen end
-  if has == true then seen[it.unit] = true; return false end
-  return seen[it.unit] == true or CHAR_KINDS[it.kind] == true
+  if has == true then seen[it.unit] = it.kind or true; return false end
+  return seen[it.unit] == (it.kind or true) or CHAR_KINDS[it.kind] == true
 end
 
 -- the game shoots along its own camera line (over your shoulder). While aiming, the view turns a little toward the
@@ -1784,13 +1791,19 @@ end
 -- jitter (0.3.66/67 used the gun: it sways 2-11 deg off the aim).
 -- A box the line goes through wins; else the enemy nearest the line within aim_cone deg (small or far targets the
 -- line just misses). Dead bodies are skipped (aim_corpse), and nothing counts as nearer than aim_near.
+local RB_FROM, RB_DIR = {}, {}
 local function aim_range(G, dx, dy, dz)
   if not (enemy_watch and chef.ray_box) then return nil, 'no enemy list' end
-  local from, dir = { x = G[1], y = G[2], z = G[3] }, { x = dx, y = dy, z = dz }
+  local from, dir = RB_FROM, RB_DIR
+  from.x, from.y, from.z, dir.x, dir.y, dir.z = G[1], G[2], G[3], dx, dy, dz
   local cone = math.rad(V.aim_cone)
   local best, bu, ca, cd, cu
+  -- the list's own spots (up to 1 s old, so 30 m to spare) rule out the far before any engine call: a bug mission lists
+  -- hundreds. Exact: one over 200 m away and under 200 m along the line is 113+ m off it, past the 21 m side limit
   for _, it in ipairs(enemy_watch.items) do
-    local x, y, z = upos(it.unit)
+    local ex, ey = (it.x or G[1]) - G[1], (it.y or G[2]) - G[2]
+    local x, y, z
+    if ex * ex + ey * ey < 230 * 230 then x, y, z = upos(it.unit) end
     if x then
       local vx, vy, vz = x - G[1], y - G[2], z - G[3]
       local along = vx * dx + vy * dy + vz * dz
@@ -1870,9 +1883,10 @@ local function aim_fix(k, cam, dt)
   -- looking down on foot, the game's line meets the ground (flat, at your feet) before S.ad: the up-down turn lines
   -- up where the shots land. Left-right stays with the far point from the hip (the game camera sits to your right,
   -- so a near point turned the view right whenever you looked down); aiming, it follows the ground point too, so a
-  -- shot at your feet lands on the crosshair
+  -- shot at your feet lands on the crosshair. An enemy's range held wins: it's measured, the flat ground is a guess
+  -- (on a ledge over an enemy, the feet's level is mid-air)
   local dv, dh = S.ad, S.ad
-  if V.aim_ground and S.gnd and dz < -0.01 then
+  if V.aim_ground and S.gnd and dz < -0.01 and not (S.hr and S.hr.d) then
     local tg = (S.gnd - S.gcz) / dz
     if tg > 0.5 and tg < S.ad then dv = tg; if S.aim then dh = tg end end
   end
@@ -2070,7 +2084,7 @@ local function place(w)
   if not (S.head and S.tx) then return end
   local hx, hy, hz = upos(S.head.u, S.head.node)
   -- a frame whose position isn't a number: the last good head, so first person holds
-  if not hx and S.badpos == S.t and S.ph then hx, hy, hz = S.ph[1], S.ph[2], S.ph[3] end
+  if not hx and bad_now(S.head.u) and S.ph then hx, hy, hz = S.ph[1], S.ph[2], S.ph[3] end
   if not hx then return end
   S.ph = { hx, hy, hz }
   local scoped = false
@@ -2218,7 +2232,10 @@ local function hand_back()
 end
 
 local function set_act(act, why)
-  if act == S.act then return end
+  -- off: the reason kept current (dying while gliding out of a knock-down cuts); coming on remembers the last one, so
+  -- the glide in from the hellpod or a death cuts too
+  if act == S.act then if not act then S.why = why end; return end
+  if act then S.inwhy = S.why end
   S.act, S.why = act, why
   -- hellpod: nothing written back, 0.25 s ease into the game's own camera and back out of it (not the glide)
   local pod = why == 'hellpod'
@@ -2238,7 +2255,7 @@ local function glide(dt)
   local goal = S.act and 1 or 0
   if S.bw ~= goal then
     -- back from a hellpod: its own 0.25 s ease (S.pin) does it
-    if V.blend <= 0 or CUT[S.why] or goal == 1 and S.offwhy == 'hellpod' or not S.head then S.bw = goal
+    if V.blend <= 0 or CUT[goal == 1 and S.inwhy or S.why] or goal == 1 and S.offwhy == 'hellpod' or not S.head then S.bw = goal
     elseif goal > S.bw then S.bw = min(1, S.bw + dt / V.blend)
     else S.bw = max(0, S.bw - dt / V.blend) end
     if abs(S.bw - goal) < 1e-9 then S.bw = goal end
@@ -2255,7 +2272,12 @@ local function set_on(on, now)
     log('first person %s', on and 'on' or 'off')
     if not on then set_act(false, 'switched off') end
   end
-  if now and not on then S.bw = 0; glide(0) end
+  if now and not on then
+    S.bw = 0; glide(0)
+    -- and what third person changed: a vehicle's field of view (restored only while the camera records live), the guns
+    for _, k in ipairs(S.cams) do if k.fov0 or k.near0 then restore(k, cam_of(k)) end end
+    show_guns()
+  end
 end
 
 -- galactic map (ship only): using the table puts your feet on one fixed spot and leans you over it, head about
@@ -2779,8 +2801,11 @@ end
 
 -- give the camera and every hidden mesh back to the game and start again as in a new world: the next frame picks
 -- your Helldiver again. First person comes back on or off as it was.
+-- what to come back as: on or off as it was once first person was decided this world (started, or switched on); before
+-- that nil, so Start in first person still decides
+local function keep_as() if S.on or S.started then return S.on end end
 local function reset_camera(why)
-  local was = S.on
+  local was = keep_as()
   set_on(false, true)
   S.world, S.keep = nil, was
   log('camera reset (%s)', why)
@@ -2844,7 +2869,7 @@ local function step(dt)
     S.dead, S.corpse, S.avs, S.av_gen, S.dgen, S.dcams = false, nil, nil, nil, nil, nil
     S.mine, S.drop_t, S.fall_t, S.lcz, S.fall_max, S.avtop, S.avfollow = nil, nil, 0, nil, 0, {}, {}
   end
-  S.t = S.t + dt
+  S.t, S.fno = S.t + dt, (S.fno or 0) + 1
   -- the game camera falling 12+ m/s for 0.25 s = a hellpod coming down (a single-frame jump is a camera cut)
   local gc = chef.camera()
   if gc and S.lcz and dt > 0 and dt < 0.1 then
@@ -2926,7 +2951,8 @@ local function step(dt)
   -- the game's view on the ship (its cutscene camera, or in a pod with Third person in the hellpod): the body isn't
   -- followed until it's back
   local ship_off = not chef.in_mission() and (S.away or S.pod and V.tp_pod)
-  if S.on and S.head and not ship_off then target(dt) end
+  -- (and while gliding out after switching off: else the glide heads for the spot the head was at the key press)
+  if (S.on or S.bw > 0) and S.head and not ship_off then target(dt) end
   if S.on and V.tp_galaxy then galaxy_check(dt) else S.galaxy = false end   -- every frame: the head shows at once
   if S.on and V.tp_term then term_check() else S.term = false end
   if S.on and V.tp_pod then pod_check() else S.puse = false end
@@ -3001,8 +3027,11 @@ local function recover(hook, err)
   else
     log('%s error: (again) %s', hook, first)
   end
-  S.draw = nil
-  local was = S.on
+  -- no render until an update runs clean again (a render error left this true, and render kept raising every frame
+  -- through the pause); the panel closed, since nothing draws it while paused and it holds the mouse
+  S.draw, REC.live = nil, false
+  local was = keep_as()
+  if P.open then pcall(open_panel, false) end
   pcall(set_on, false, true)
   S.world = nil
   if S.keep == nil then S.keep = was end
