@@ -1251,10 +1251,11 @@ local function scan_done(near)
     or not chef.in_mission() and S.mine ~= nil and chef.unit_alive(S.mine)
   -- right after your drop: your Helldiver is the one that came down with the pod (30+ m below its highest point;
   -- it exists from the mission load, 2026-11-07 log), so a teammate standing where you land is never taken. None
-  -- fell = nearest, as before
+  -- fell = nearest, as before. Solo too: a corpse the mod doesn't know as one (a death before an F11 reload) lying
+  -- where your reinforcement lands was taken as the nearest, then dropped as dead 6 s later (1.2.9 log)
   local function fell(h) return h.z and S.avtop[h.u] and S.avtop[h.u] - h.z > 30 end
   local fresh = nil
-  if others_here() and drop_seen() then
+  if drop_seen() then
     for _, h in ipairs(near) do
       h.x, h.y, h.z = upos(h.u, h.node)
       if h.bone == 'head' and h.kind == AVATAR_KIND and h.u ~= S.mine and fell(h) then fresh = true end
