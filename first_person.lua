@@ -95,6 +95,15 @@ local TABS = {
       hint = 'Switches to the game\'s camera while you tumble or lie dead, and back once you are up.' },
   } },
   { name = 'AIM', rows = {
+    { head = 'VIEW WHILE AIMING' },
+    { id = 'aimpos_fwd', label = 'Forward', min = -0.2, max = 0.3, step = 0.01, def = 0, unit = ' m',
+      hint = 'Moves the view forward (or back, minus) while you aim with the right mouse button. Eases in and out with the aim.' },
+    { id = 'aimpos_up', label = 'Height', min = -0.15, max = 0.15, step = 0.01, def = 0, unit = ' m',
+      hint = 'Raises or lowers the view while you aim, for example closer to the sights. Eases in and out with the aim.' },
+    { id = 'aimpos_side', label = 'Sideways', min = -0.2, max = 0.2, step = 0.01, def = 0, unit = ' m',
+      hint = 'Moves the view left (minus) or right while you aim. Eases in and out with the aim.' },
+    { id = 'aimpos_time', label = 'Move time', min = 0, max = 1, step = 0.05, def = 0.15, unit = ' s',
+      hint = 'How long the view takes to move to the aiming spot and back.' },
     { head = 'CROSSHAIR FIX' },
     { id = 'aim_fix', label = 'Crosshair follows the gun', toggle = true, def = true,
       hint = 'The view turns a little so the crosshair sits where your shots land. Everything on this tab needs it on.' },
@@ -1613,6 +1622,14 @@ local function target(dt)
   local f = V.fwd + (seat and V[pre .. seat[1]] or S.sf or 0)
   local up = V.up + (seat and V[pre .. seat[2]] or S.su or 0)
   local sd = V.side + (seat and V[pre .. seat[3]] or S.ss or 0)
+  -- aiming on foot: the VIEW WHILE AIMING offsets, eased in and out with the aim (S.aimw 0..1)
+  local aiming = S.aim and S.act and not (S.frv or S.mech or S.empl or S.tank) or false
+  local at = V.aimpos_time
+  S.aimw = at > 0 and max(0, min(1, (S.aimw or 0) + (aiming and dt or -dt) / at)) or (aiming and 1 or 0)
+  if S.aimw > 0 then
+    local e = S.aimw * S.aimw * (3 - 2 * S.aimw)   -- eased: starts and ends gently
+    f, up, sd = f + e * V.aimpos_fwd, up + e * V.aimpos_up, sd + e * V.aimpos_side
+  end
   -- offsets along the level view, height straight up: looking up or down no longer carries the view up into the gun
   -- or down into the chest; on foot, looking down pushes it forward instead
   local ux, uy = fx / hl, fy / hl
