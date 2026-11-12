@@ -451,7 +451,7 @@ local TABS = {
     { id = 'profile_key', label = 'Next profile', key = true, def = 'off',
       hint = 'Switches to the next of the five profiles. Press RIGHT, then the new key. DELETE sets none.' },
     { id = 'reset_key', label = 'Reset camera', key = true, def = 'off',
-      hint = 'Hands the camera back and finds your Helldiver again (first person stays on or off). For a stuck view; alone in a mission, also a wrong pick.' },
+      hint = 'Hands the camera back and finds your Helldiver again by where the game camera sits (first person stays on or off). For a stuck view or a wrong Helldiver.' },
     { head = 'CONTROLLER' },
     { id = 'pad_toggle', label = 'Controller: first person on/off', key = true, def = 'off',
       hint = 'A controller button: bind it in the loader options (this panel takes keyboard keys). Press: first person on or off. Hold 1 s: reset camera.' },
@@ -4450,10 +4450,8 @@ local function user_toggle()
   if S.keep ~= nil then S.keep = S.on end
   say(S.on and 'FIRST PERSON ON' or 'FIRST PERSON OFF')
 end
--- what a restart in the same world carries (the reset key, or an error the mod got over): your Helldiver is never
--- forgotten, except for a death known for certain (the animation gone: the body is a corpse, and the reinforcement's
--- drop picks the next). A forgotten Helldiver let the restart take whichever head was nearest the camera: in
--- multiplayer the teammate it followed. Alone in a mission the nearest is picked anyway (no teammate to take).
+-- what a restart in the same world carries (the reset key): a death known for certain (the animation gone: the body
+-- is a corpse, and the reinforcement's drop picks the next). Your Helldiver itself is forgotten (reset_camera).
 --   a death as it stood: certain, a corpse never picked again; a guess (the cameras changing while lying), your
 --     Helldiver picked again while lying (the game camera: dead), and standing up ends the guess
 --   the drop in progress (one drop per fall, the bodies followed down), and the body's stance as measured
@@ -4475,6 +4473,10 @@ local function reset_camera(why)
   -- a second reset before the re-pick: the first one's on/off (still waiting: off, and not started)
   if was == nil and S.keep ~= nil and S.keep_w == chef.world_id() then was = S.keep end
   carry()
+  -- your Helldiver is forgotten and picked again by where the game camera sits (cam_pick, then cam_confirm): the way
+  -- out of a wrong pick, which the kept one locked in (2026-11-12). Not while dead: the camera follows a teammate then.
+  -- The bodies seen falling are dropped too, so only the camera decides (a body never seen falling was left out)
+  if not S.dead then S.carry.mine, S.carry.body, S.carry.drop_t, S.carry.avtop, S.carry.avfollow = nil, nil, S.t, {}, {} end
   set_on(false, true)
   S.world, S.keep, S.keep_w = nil, was, chef.world_id()
   log('camera reset (%s)', why)
