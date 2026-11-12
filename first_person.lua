@@ -3073,6 +3073,16 @@ local function place(w)
       if k.idle > 20 then k.static = true; log('camera %d: the game never moves it, left alone', ci) end
     end
     if k.static then state = 'static' end
+    -- a lobby join starts by throwing the ship's camera far off and the game was gone within 0.1 s (3 of 5 joins,
+    -- 1.2.58-1.2.69, nothing of ours open): touch nothing for 0.5 s, then hand off as usual
+    if k.main and not chef.in_mission() then
+      if state ~= 'far' then S.jdone = nil
+      elseif k.state ~= 'far' and not S.jdone then
+        S.jdone, S.jhold = true, 0.5
+        log('ship: the game camera jumped away, touching nothing for 0.5 s')
+        return
+      end
+    end
     -- any hand-off (scope, far, back): the game shows the helmet again a few frames later, re-hide every frame for 1 s
     if state ~= k.state then k.state = state; S.rehide = S.t + 1; log('camera %d (slot %d): %s', ci, k.slot, state) end
     if state == 'scope' then scoped = true end
@@ -4482,6 +4492,39 @@ local function reset_camera(why)
   log('camera reset (%s)', why)
 end
 
+-- joining a lobby tears worlds down while the loader still hands out the same main world (2 of 4 joins with first
+-- person on the ship crashed, 2026-11-11/12: the game camera going 'far', the game gone within 0.1 s, no error of
+-- ours). So a main world missing from the game's list of worlds is going away: touch nothing; and any change to that
+-- list drops every handle first, without a call on any of them. A fresh start in the same world keeps your Helldiver
+-- and first person on/off, as a reset does
+local function drop_handles(why)
+  local was = keep_as()
+  if was == nil and S.keep ~= nil and S.keep_w == chef.world_id() then was = S.keep end
+  carry()
+  S.world, S.keep, S.keep_w = nil, was, chef.world_id()
+  S.cams, S.head, S.parts, S.hidden, S.uhid, S.ghid, S.gst = {}, nil, {}, {}, {}, {}, {}
+  S.act, S.on, S.tx, S.handing, S.glass_u = false, false, nil, false, nil
+  log('handles dropped: %s', why)
+end
+local function world_gone()
+  local w = chef.world()
+  local ws = w and call('Application.worlds')
+  if type(ws) ~= 'table' then return false end
+  local listed, sig = false, { #ws }
+  for i = 1, #ws do listed = listed or ws[i] == w; sig[#sig + 1] = tostring(ws[i]) end
+  sig = table.concat(sig, ' ')
+  if not listed then
+    if not S.wgone then S.wgone = true; drop_handles('the world is going away (not in the list of worlds)') end
+    S.wsig = nil
+    return true
+  end
+  S.wgone = nil
+  -- (a new world id is the usual world change, which starts fresh by itself without carrying anything over)
+  if S.wsig and sig ~= S.wsig and chef.world_id() == S.world then drop_handles(string.format('the list of worlds changed (%d worlds)', #ws)) end
+  S.wsig = sig
+  return false
+end
+
 -- the controller toggle (KEYS tab): with no hold button a press of Controller: first person on/off toggles; with one,
 -- a double tap (the second within 0.35 s) while it's held. Either held 1 s (the second press of a double tap): reset
 -- camera instead. It fires on letting go, so a hold never toggles first.
@@ -4799,7 +4842,7 @@ end
 
 local function render_step()
   local w = chef.world()
-  if not w then return end
+  if not w or S.wgone or S.jhold then return end
   hold_body(w, true)
   -- the draw pass puts the camera back (the game moves it between update and draw every frame, 1.0.1 log): no easing (it ran twice as fast with both passes) and no enemy ranging
   S.dt, S.draw = 0, true
@@ -4885,7 +4928,15 @@ local function recover(hook, err)
   end
 end
 local frame_dt = 0
-local function update_now() step(frame_dt) end
+local function update_now()
+  if S.jhold then
+    S.jhold = S.jhold - frame_dt
+    if S.jhold > 0 then return end
+    S.jhold = nil
+    log('ship: 0.5 s held, going on')
+  end
+  if not world_gone() then step(frame_dt) end
+end
 function M.update(dt)
   if type(dt) ~= 'number' or dt ~= dt or dt < 0 or dt == math.huge then dt = 0 end
   if REC.stopped then pcall(draw_msg, dt); return end
