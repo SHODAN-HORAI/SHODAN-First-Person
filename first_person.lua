@@ -1263,6 +1263,46 @@ end
 local function drop_seen() return S.drop_t and S.t - S.drop_t < 30 end
 local function others_here() return chef.in_mission() and (chef.players and chef.players() or 1) > 1 end
 
+-- which Helldiver is yours, by where the game's camera sits (numbers measured in game): the game's third-person
+-- camera keeps your head 3.2 m in front of it, the camera 0.55 m to the head's right. Score = metres off that spot
+-- (sideways counts 1.5x); also the distance, how far right, and how straight ahead the head is (1 = dead ahead)
+local function cam_fit(g, hx, hy, hz)
+  local dx, dy, dz = hx - g.x, hy - g.y, hz - g.z
+  local d, hl = sqrt(dx * dx + dy * dy + dz * dz), sqrt(g.fx * g.fx + g.fy * g.fy)
+  if d < 0.05 or hl < 1e-3 then return nil end
+  local r = (dy * g.fx - dx * g.fy) / hl
+  return abs(d - 3.2) + 1.5 * abs(r - 0.55), d, r, (dx * g.fx + dy * g.fy + dz * g.fz) / d
+end
+
+-- the best fit is yours when it clearly is: within 2.5 of the spot and 0.8 ahead of the next (0.4 when under 1.0).
+-- A lone Helldiver off the spot (the ship's walk-in camera) is taken once it has been the only one for 5 s with the
+-- camera still. Each pick is then checked by cam_confirm
+local function cam_pick(list, c)
+  table.sort(list, function(a, b) return a.s < b.s end)
+  local b, n2 = list[1], list[2]
+  local v = S.pcam and S.t - S.pcam.t <= 1 and sqrt((c.x - S.pcam.x) ^ 2 + (c.y - S.pcam.y) ^ 2 + (c.z - S.pcam.z) ^ 2) / max(S.t - S.pcam.t, 1e-3) or 0
+  S.pcam = { x = c.x, y = c.y, z = c.z, t = S.t }
+  local why
+  if not b then why = 'no Helldiver in front of the camera'
+  elseif b.s > 2.5 and n2 then why = 'the camera is not where it sits for any of them yet'
+  elseif b.s > 2.5 and v > 1.5 then why = 'the camera is still moving'
+  elseif b.s > 2.5 and (S.lone ~= b.h.u or S.t - S.lone_t < 5) then
+    if S.lone ~= b.h.u then S.lone, S.lone_t = b.h.u, S.t end
+    why = 'the camera is still settling'
+  elseif n2 and n2.s - b.s < 0.8 and not (b.s < 1 and n2.s - b.s >= 0.4) then why = 'two Helldivers fit about as well' end
+  if why then
+    if S.t >= (S.why_t or 0) then
+      S.why_t = S.t + 3
+      log('looking for your Helldiver: %s (%d in front, best %.2f, next %.2f)', why, #list, b and b.s or -1, n2 and n2.s or -1)
+    end
+    return nil, 6
+  end
+  S.confirm = { moved = 0, limit = n2 and min(2.5, b.s + 1) or max(2.5, b.s + 1.5) }
+  local _, d, r = cam_fit(c, b.h.x, b.h.y, b.h.z)
+  log('your Helldiver found, %.2f m in front of the camera, the camera %.2f m to its right (score %.2f, %d in front)', d, r, b.s, #list)
+  return b.h, b.d
+end
+
 -- the end of a scan, all in one frame on the few units near the view: the Helldiver whose head is nearest, and the
 -- pieces worn on him (the same spot of the same bone)
 local function scan_done(near)
@@ -1296,6 +1336,11 @@ local function scan_done(near)
       if h.bone == 'head' and h.kind == AVATAR_KIND and h.u ~= S.mine and fell(h) then fresh = true end
     end
   end
+  -- a new Helldiver of yours (a ship with none yet: the old handle went with the world; a mission after your hellpod
+  -- drop): the one whose head sits where the game camera keeps yours, never the nearest or the one the falling camera
+  -- passed most (2026-11-12: a teammate beside you after a mission; a teammate's pod still falling at 44 m/s past the
+  -- camera on a 4-player drop, which then locked yours out as a 'teammate' until the next drop)
+  local fitting = c.fx and not gate and not S.head and (not chef.in_mission() or drop_seen()) and {}
   for _, h in ipairs(near) do
     h.x, h.y, h.z = upos(h.u, h.node)
     local teammate = gate and h.u ~= S.mine
@@ -1309,9 +1354,13 @@ local function scan_done(near)
       -- several pods at once (a group reinforcement): the one the camera followed down most wins, then the nearest
       local f = fresh and (S.avfollow[h.u] or 0) or 0
       h.f = f
-      if d < 6 and (not best or f > best.f or f == best.f and d < bd) then best, bd = h, d end
+      if fitting then
+        local s, _, _, ahead = cam_fit(c, h.x, h.y, h.z)
+        if s and ahead > 0.5 and not (S.reject[h.u] and S.t < S.reject[h.u]) then fitting[#fitting + 1] = { h = h, s = s, d = d } end
+      elseif d < 6 and (not best or f > best.f or f == best.f and d < bd) then best, bd = h, d end
     end
   end
+  if fitting then best, bd = cam_pick(fitting, c) end
   if not best then
     -- a seat whose game camera sits far off (tank crew, the Gator, the Pelican): a rescan finding nobody near that
     -- camera keeps the Helldiver you have
@@ -1429,7 +1478,10 @@ local function check_player(w)
       -- take the teammate's Helldiver); S.away hands the view to the game instead
       -- a tank's crew camera (about 11 m back), the Gator's and the Pelican's outside shots sit far from the head
       local seatcam = S.tank or S.gator or S.pel or S.tl14
-      lost = (not x and not bad_now(h.u)) or (x and chef.in_mission() and not ours and not S.galaxy and not seatcam and c and (x - c.x) ^ 2 + (y - c.y) ^ 2 + (z - c.z) ^ 2 > 36)
+      -- a camera pick still being checked (cam_confirm) isn't let go by distance: the check decides, else a wrong one
+      -- stays S.mine and gates yours out
+      local checking = S.confirm and not S.dead
+      lost = (not x and not bad_now(h.u)) or (x and chef.in_mission() and not ours and not S.galaxy and not seatcam and not checking and c and (x - c.x) ^ 2 + (y - c.y) ^ 2 + (z - c.z) ^ 2 > 36)
     end
     if lost then
       -- only the body that died (the head can already be your reinforcement, picked while that death is still held
@@ -1448,8 +1500,8 @@ local function check_player(w)
   -- galactic table: a scan from its far camera found nobody, lost the Helldiver, and S.away could never clear again
   if (S.nopod or S.away or S.galaxy) and not chef.in_mission() then return end
   if not S.head then
-    -- right after your hellpod is seen: look every half second, so first person comes on as it lands
-    local every = drop_seen() and 0.5 or 3
+    -- right after your hellpod is seen, or on the ship (the pick waits for the camera to settle): every half second
+    local every = (drop_seen() or not chef.in_mission()) and 0.5 or 3
     if not S.last_scan or S.t - S.last_scan >= every then start_scan(w) end
   elseif S.rescans[1] and S.t >= S.rescans[1] then
     table.remove(S.rescans, 1); start_scan(w)
@@ -2980,6 +3032,10 @@ local function place(w)
       if state == 'far' and k.main and S.galaxy and S.bw > 0 then state = 'ours' end
       if state ~= k.state and d < 0.4 then log('camera %d: %.2f m from the head, %.2f m ahead', ci, d, al) end
       if k.main then
+        if S.confirm then  -- the game's own pose for cam_confirm (chef.camera() is ours while we write it)
+          local fx, fy, fz = xyz(call('Quaternion.forward', call('Camera.local_rotation', cam)))
+          S.gcam = fx and { x = cx, y = cy, z = cz, fx = fx, fy = fy, fz = fz, t = S.t } or S.gcam
+        end
         S.gcx, S.gcy, S.gcz = cx, cy, cz  -- the game's own camera: the line it shoots along
         -- lying or diving the floor squeezes it in and out frame to frame and the aim fix turned the view with it
         -- (aiming on your back looking down-right, 2026-11-09): hold its offset from the root steady there (0.15 s)
@@ -3266,6 +3322,40 @@ local function game_view_far(x, y, z)
   if known then return far end
 end
 
+-- is the camera pick really yours? Over the game camera's first 8 m of travel it has to keep
+-- sitting where it sits for your own head (the pick's score, a bit of slack); a teammate's head drifts out of that
+-- spot as you both move. 0.75 s out of it lets the pick go, and that Helldiver isn't taken again for 8 s. On foot
+-- only: paused while the game camera is legitimately elsewhere (the galactic table, a pod, a seat, a
+-- terminal or menu close-up, aiming, down or dead), unless it had already drifted off before that
+local function cam_confirm()
+  local c, h = S.confirm, S.head
+  if not c then return end
+  if not h then S.confirm = nil; return end
+  local g = S.act and S.gcam or not S.act and chef.camera()
+  if not (g and g.fx) or S.act and S.t - g.t > 0.1 then return end
+  local busy = S.galaxy or S.pod or S.away or S.term or S.aim or S.dead or S.down_any or S.down or S.diving or S.getup
+    or S.mech or S.frv or S.empl or S.tank or S.gator or S.pel or S.tl14
+  if busy and not c.bad then c.x = nil; return end
+  local hx, hy, hz = upos(h.u, h.node)
+  local s, d, r = hx and cam_fit(g, hx, hy, hz)
+  if not s then return end
+  if c.x then c.moved = c.moved + sqrt((g.x - c.x) ^ 2 + (g.y - c.y) ^ 2 + (g.z - c.z) ^ 2) end
+  c.x, c.y, c.z = g.x, g.y, g.z
+  if s <= c.limit then c.bad = nil
+  else
+    c.bad = c.bad or S.t
+    if S.t - c.bad >= 0.75 then
+      log('that Helldiver is not yours (the game camera sits %.2f m from its head, %.2f m to its right: score %.2f): looking again', d, r, s)
+      S.reject[h.u] = S.t + 8
+      S.head, S.parts, S.mine, S.confirm = nil, {}, nil, nil
+      S.away, S.away_t, S.spod, S.last_scan = false, 0, false, nil  -- were about the wrong head
+      if chef.in_mission() then S.drop_t, S.mdrop, S.pod = S.t, nil, false end  -- the pick is open again (no 'teammate' gate)
+      return
+    end
+  end
+  if c.moved >= 8 then S.confirm = nil; log('your Helldiver confirmed (the camera followed it for %.1f m)', c.moved) end
+end
+
 -- hellpods (the view, fixed (user): the game's from using the pod on the ship through the fall, first person 0.5 s
 -- after the mission pod lands; picked every frame, before anything asks the body):
 -- S.pod   in a hellpod. Ship: the head down at prone height (nothing else on the ship lays you down, 2026-11-07),
@@ -3276,6 +3366,7 @@ end
 -- S.nopod the body is left alone: no animation questions, and on the ship no scans for another Helldiver and no
 --         mesh probes. Nothing here depends on saved pod spots or on which keys you use
 local function pod_guard(dt)
+  cam_confirm()
   local h = S.head
   local hx, hy, hz, rx, ry, rz
   if h then hx, hy, hz = upos(h.u, h.node); rx, ry, rz = upos(h.u, h.root) end
@@ -4478,6 +4569,7 @@ local function step(dt)
     S.ad, S.aw, S.podu, S.puse, S.pod = nil, nil, nil, false, false
     S.away, S.away_t, S.spod, S.slow_t, S.sup_t, S.shmax, S.nopod, S.mdrop, S.pfall_t = false, 0, false, 0, 0, nil, false, nil, 0
     S.calm_t = 0
+    S.reject, S.confirm, S.lone, S.pcam, S.gcam = {}, nil, nil, nil, nil
     S.down_any, S.getup, S.rising = false, false, false
     S.act, S.down, S.stance, S.hmax, S.fv = false, false, nil, nil, nil
     S.mech, S.mech_it, S.frv, S.empl, S.tank, S.tpass = false, false, false, false, false, false
