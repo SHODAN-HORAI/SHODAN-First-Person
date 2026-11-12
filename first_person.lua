@@ -1953,7 +1953,9 @@ local function target(dt)
   -- aiming while lying on your side or back: the head is at the sights, so the dive's forward push (still on after
   -- a side dive), the look-back lift and the on-your-back limits fade out with the aim (they put the view inside
   -- the gun aiming sideways after a side dive, screenshots 2026-11-11, belly up 0.50)
-  S.sideaim = S.stance == 'prone' and LIE_ANIM[S.an or 0] and not S.getup and bu and bu > -0.4 and (S.aimw or 0) or 0
+  -- blended over belly up -0.7..-0.4, not cut at -0.4: aiming down-right after a backward dive sits right at -0.4,
+  -- the on-your-back reach (0.2 m) flipped on and off frame to frame and the view jittered (log 2026-11-12)
+  S.sideaim = S.stance == 'prone' and LIE_ANIM[S.an or 0] and not S.getup and bu and min(1, max(0, (bu + 0.7) / 0.3)) * (S.aimw or 0) or 0
   if S.sideaim > 0.5 and not S.salog then
     S.salog = true
     log('aiming lying on your side/back (belly up %.2f): head %.2f m over the hips, %.2f m from them; dive push %.2f m and lifts dropped', bu, oz, sqrt(ox * ox + oy * oy), S.diving and S.diving ~= 'dive_hide_back' and V.dive_fwd or 0)
