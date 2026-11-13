@@ -15,8 +15,8 @@ reinforcement drops in. Aim with the ballistic shield raised and you look throug
 ## Install
 
 1. Install Chef Shared Loader 1.5.4 or newer.
-2. Add the SHODAN First Person zip in your mod manager and deploy. Its Death sound option plays a sound when you or a
-   teammate dies. It's set to None by default, which keeps the game as it is.
+2. Add the SHODAN First Person zip in your mod manager and deploy. Its Death sound option plays a sound when you die.
+   It's set to None by default, which keeps the game as it is.
    Its Glass cockpit option turns an exosuit's cockpit to glass while you sit in it. Untick it if you use another
    cockpit mod.
 3. Start the game. Press **F6** for first person and **F10** for the settings panel.
