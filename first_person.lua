@@ -381,6 +381,8 @@ local TABS = {
     { head = 'MECH' },
     { id = 'cockpit_look', global = true, label = 'Cockpit', min = 1, max = 2, step = 1, def = 1, names = { 'GLASS', 'FULLY CLEAR' },
       hint = 'Every exosuit, with the Glass cockpit option ticked in Arsenal: while you sit in it the cockpit turns to glass (GLASS) or is not there at all (FULLY CLEAR).' },
+    { id = 'glass_shield', global = true, label = 'Glass shield (Breakthrough)', toggle = true, def = true,
+      hint = 'With the Glass cockpit option ticked in Arsenal: while you sit in a Breakthrough its shield turns to the same glass as the cockpit, so you see through it.' },
     { id = 'mech_pick', global = true, label = 'Mech model to edit', min = 1, max = #MECHS, step = 1, def = 1,
       hint = 'Pick the exosuit the mech rows below change. Each exosuit keeps its own settings.' },
     { id = 'tp_mech', label = 'Third person in a mech', toggle = true, def = false,
@@ -3727,23 +3729,35 @@ end
 -- (Cockpit GLASS) or nothing (FULLY CLEAR) shows instead of the panels; every other exosuit gets its glass hidden (it
 -- spawns shown). By number: the game doesn't know them by name (1.2.63). No material swaps: the game's shadow material
 -- set at runtime drew flat cyan (1.2.64).
-local GLASS = { panels = 9, glass = 10 }
-function HUD.glass(u, on, quiet)
+-- The Breakthrough's shield arm (same patch) the same way: its plate = mesh 14, glass copy = 15 (row Glass shield).
+local GLASS = { panels = 9, glass = 10, what = 'glass cockpit' }
+HUD.SHIELD = { panels = 14, glass = 15, what = 'glass shield', kind = '65489809a8181b96' }
+function HUD.glass(u, on, quiet, G)
   if not u then return end
+  G = G or GLASS
   local n = call('Unit.num_meshes', u)
-  local k = n == GLASS.glass and call('Mesh.num_materials', call('Unit.mesh', u, GLASS.glass))
-  if k ~= 1 then once('glassn', 'glass cockpit: not in this exosuit\'s model (%s meshes, last has %s materials; ours 10 and 1)', tostring(n), tostring(k)); return end
-  local clear = on and V.cockpit_look == 2
+  local k = n == G.glass and call('Mesh.num_materials', call('Unit.mesh', u, G.glass))
+  if k ~= 1 then once(G.what .. 'n', '%s: not in this model (%s meshes, last has %s materials; ours %d and 1)', G.what, tostring(n), tostring(k), G.glass); return end
+  local clear = on and G == GLASS and V.cockpit_look == 2
   -- the one shown first and the others hidden only after, so a refusal never leaves a hole
-  local show = not on and GLASS.panels or not clear and GLASS.glass
+  local show = not on and G.panels or not clear and G.glass
   local a = show and select(2, call('Unit.set_mesh_visibility', u, show, true, 'default'))
   local b
-  if not a and on then b = select(2, call('Unit.set_mesh_visibility', u, GLASS.panels, false, 'default')) end
-  if not a and (clear or not on) then b = b or select(2, call('Unit.set_mesh_visibility', u, GLASS.glass, false, 'default')) end
-  local line = string.format('glass cockpit %s (%s, %s; glass drawn: %s)', on and (clear and 'fully clear' or 'on') or 'off',
+  if not a and on then b = select(2, call('Unit.set_mesh_visibility', u, G.panels, false, 'default')) end
+  if not a and (clear or not on) then b = b or select(2, call('Unit.set_mesh_visibility', u, G.glass, false, 'default')) end
+  local line = string.format('%s %s (%s, %s; glass drawn: %s)', G.what, on and (clear and 'fully clear' or 'on') or 'off',
     a and 'show refused: ' .. tostring(a) or show and 'shown' or 'nothing shown', a and 'nothing hidden' or b and 'hide refused: ' .. tostring(b) or 'hidden',
-    tostring(call('Mesh.visibility', call('Unit.mesh', u, GLASS.glass))))
-  if not quiet then log('%s', line) elseif a or b then once('glassq', '%s (sweep)', line) end
+    tostring(call('Mesh.visibility', call('Unit.mesh', u, G.glass))))
+  if not quiet then log('%s', line) elseif a or b then once(G.what .. 'q', '%s (sweep)', line) end
+end
+-- the shield arm of the mech item you're in (an arm's item: the nearest shield arm), glass while the row is on
+function HUD.shield(it)
+  local G, sh, best = HUD.SHIELD, false, 6
+  for _, o in ipairs(it and mech_watch and mech_watch.items or {}) do
+    local d = o.kind == G.kind and abs(o.x - it.x) + abs(o.y - it.y)
+    if d and d < best then best, sh = d, o.unit end
+  end
+  if sh ~= S.sglass_u then HUD.glass(S.sglass_u, false, false, G); S.sglass_u = sh; HUD.glass(sh, V.glass_shield, false, G) end
 end
 -- once per watch list (about every 2 s): every listed exosuit you're not in gets its glass hidden, and yours is set
 -- again (a Cockpit change while seated; and if the game hid the glass, it's shown again)
@@ -3757,6 +3771,9 @@ function HUD.glass_sweep()
   end
   if u then HUD.glass(u, true, true) end
   for _, o in ipairs(mech_watch.items) do if PRE[o.kind] and o.unit ~= u then HUD.glass(o.unit, false, true) end end
+  local G, sh = HUD.SHIELD, S.sglass_u
+  if sh then HUD.glass(sh, V.glass_shield, true, G) end
+  for _, o in ipairs(mech_watch.items) do if o.kind == G.kind and o.unit ~= sh then HUD.glass(o.unit, false, true, G) end end
 end
 function HUD.goid(v) return type(v) == 'number' and v % 1 == 0 and v > 0 and v < 32767 end
 function HUD.fields(id)
@@ -4505,7 +4522,7 @@ local function drop_handles(why)
   carry()
   S.world, S.keep, S.keep_w = nil, was, chef.world_id()
   S.cams, S.head, S.parts, S.hidden, S.uhid, S.ghid, S.gst = {}, nil, {}, {}, {}, {}, {}
-  S.act, S.on, S.tx, S.handing, S.glass_u = false, false, nil, false, nil
+  S.act, S.on, S.tx, S.handing, S.glass_u, S.sglass_u = false, false, nil, false, nil, nil
   log('handles dropped: %s', why)
 end
 local function world_gone()
@@ -4726,6 +4743,7 @@ local function step(dt)
     end
     local body = S.mech_it and HUD.body(S.mech_it) or false
     if body ~= S.glass_u then HUD.glass(S.glass_u, false); S.glass_u = body; HUD.glass(body, true) end
+    HUD.shield(S.mech_it)
     HUD.glass_sweep()
     S.mech, S.empl = mech, at_emplacement()
   end
