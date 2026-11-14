@@ -2438,19 +2438,70 @@ end
 -- A box the line goes through wins; else the enemy nearest the line within aim_cone deg (small or far targets the
 -- line just misses). Dead bodies are skipped (aim_corpse), and nothing counts as nearer than aim_near.
 local RB_FROM, RB_DIR = {}, {}
-local function aim_range(G, dx, dy, dz)
+local aim_range
+do
+-- the enemies that pass the cone, box-tested nearest first (POOL keeps the small tables from frame to frame)
+local POOL, LIST = {}, {}
+-- our last read of each listed enemy, { unit, mod time, x, y, z }: weak keys, so it goes with the list's entry.
+-- shortcut: the mod clock stops while an error pause holds the mod, so for under 1 s after one an enemy that moved
+-- meanwhile can be missed (the 'no enemy' distance meanwhile); a wall clock if that ever shows
+local SEEN = setmetatable({}, { __mode = 'k' })
+local function by_lb(a, b) return a.lb < b.lb end
+-- how far an enemy's box reaches from its root (box middle's offset + half diagonal, 1 m to spare), read once per unit
+-- (S.reach, new each world; the kind guards a handle handed out again). Its box test can't hit nearer than its distance
+-- along the line minus that. false: no box to read, so always tested
+local function reach(it, x, y, z)
+  local all = S.reach
+  if not all then all = {}; S.reach = all end
+  local r = all[it.unit]
+  if r and r.kind == it.kind then return r.d end
+  local d = false
+  local pose, ext = call('Unit.box', it.unit)
+  if pose then
+    local ex, ey, ez = xyz(ext)
+    local cx, cy, cz = xyz(call('Matrix4x4.translation', pose))
+    if ex and cx then d = sqrt((cx - x) ^ 2 + (cy - y) ^ 2 + (cz - z) ^ 2) + sqrt(ex * ex + ey * ey + ez * ez) + 1 end
+  end
+  once(d and 'reach1' or 'reach0', 'enemy sizes: %s', d and 'read from their boxes (nearest first, farther box tests skipped)'
+    or 'one unreadable, its box always tested')
+  all[it.unit] = { kind = it.kind, d = d }
+  return d
+end
+function aim_range(G, dx, dy, dz)
   if not (enemy_watch and chef.ray_box) then return nil, 'no enemy list' end
   if enemy_watch.generation == S.ew_gen then return nil, 'enemy list coming' end  -- the list from before a pause: stale units
   local from, dir = RB_FROM, RB_DIR
   from.x, from.y, from.z, dir.x, dir.y, dir.z = G[1], G[2], G[3], dx, dy, dz
   local cone = math.rad(V.aim_cone)
   local best, bu, ca, cd, cu
+  local n = 0
   -- the list's own spots (up to 1 s old, so 30 m to spare) rule out the far before any engine call: a bug mission lists
   -- hundreds. Exact: one over 200 m away and under 200 m along the line is 113+ m off it, past the 21 m side limit
   for _, it in ipairs(enemy_watch.items) do
     local ex, ey = (it.x or G[1]) - G[1], (it.y or G[2]) - G[2]
     local x, y, z
-    if ex * ex + ey * ey < 230 * 230 then x, y, z = upos(it.unit) end
+    if ex * ex + ey * ey < 230 * 230 then
+      -- and the spot within 30 m of the box-test cone below (moving 30 m changes along and off the line by 30 m at most).
+      -- Our own read of it under 1 s ago is used instead, with 30 m a second to spare: one read 0.1 s ago needs 3 m, so
+      -- an enemy clearly off the line isn't read again until it could have reached it (timer 2026-11-14: these reads
+      -- were most of the enemy check, 20-40 a frame in a fight)
+      local near, sx, sy, sz, m = true, it.x, it.y, it.z, 30
+      local s = SEEN[it]
+      if s and s.u == it.unit and S.t - s.t < 1 then sx, sy, sz, m = s[1], s[2], s[3], 30 * (S.t - s.t) end
+      if sz then
+        local qx, qy, qz = sx - G[1], sy - G[2], sz - G[3]
+        local qa = qx * dx + qy * dy + qz * dz
+        local qs = sqrt(max(0, qx * qx + qy * qy + qz * qz - qa * qa))
+        near = qa > 2 - m and qa < 200 + m and qs - m < max(3, min(200, qa + m) * 0.105)
+      end
+      if near then
+        x, y, z = upos(it.unit)
+        if x then
+          if not s then s = {}; SEEN[it] = s end
+          s.u, s.t, s[1], s[2], s[3] = it.unit, S.t, x, y, z
+        end
+      end
+    end
     if x then
       local vx, vy, vz = x - G[1], y - G[2], z - G[3]
       local along = vx * dx + vy * dy + vz * dz
@@ -2458,17 +2509,29 @@ local function aim_range(G, dx, dy, dz)
         local side = sqrt(max(0, vx * vx + vy * vy + vz * vz - along * along))
         -- only enemies within 6 deg (or 3 m) of the line get the box test
         if side < max(3, along * 0.105) and not (V.aim_corpse and corpse(it)) then
-          local hit = chef.ray_box(from, dir, it.unit)
-          if type(hit) == 'number' and hit > 2 and (not best or hit < best) then best, bu = hit, it.unit end
           local a = math.atan2(side, along)
           if a < cone and (not ca or a < ca) then ca, cd, cu = a, along, it.unit end
+          local r = reach(it, x, y, z)
+          n = n + 1
+          local c = POOL[n] or {}
+          POOL[n], LIST[n] = c, c
+          c.u, c.lb = it.unit, r and along - r or -math.huge
         end
       end
     end
   end
+  for i = #LIST, n + 1, -1 do LIST[i] = nil end
+  table.sort(LIST, by_lb)
+  for i = 1, n do
+    local c = LIST[i]
+    if best and c.lb >= best then break end  -- this one and every one after can't be nearer than the hit found
+    local hit = chef.ray_box(from, dir, c.u)
+    if type(hit) == 'number' and hit > 2 and (not best or hit < best) then best, bu = hit, c.u end
+  end
   if best then return max(best, V.aim_near), 'enemy', bu end
   if cd then return max(cd, V.aim_near), 'near miss', cu end
   return nil, 'no enemy'
+end
 end
 
 -- Measure from the gun: the game points your gun at what its camera line hits, so the two lines cross there, and how
