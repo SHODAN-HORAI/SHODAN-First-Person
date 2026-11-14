@@ -280,6 +280,9 @@ local TABS = {
       hint = 'Raises the view over your back and gun when you look behind you after a dive, while prone or while getting up.' },
   } },
   { name = 'MESHES', rows = {
+    { head = 'THIRD PERSON' },
+    { id = 'hide_tp', label = 'Keep hidden in third person', toggle = true, def = false,
+      hint = 'On: everything hidden below stays hidden while the game\'s camera is in use too (third person, seats, terminals). Only for you.' },
     { head = 'ALWAYS' },
     { id = 'hide_helmet', label = 'Hide helmet and head', toggle = true, def = true,
       hint = 'Hidden only for you while first person is on. Others still see it.' },
@@ -1635,8 +1638,8 @@ end
 
 -- meshes: hide what the settings ask for (again each time: the game can show them), show again only what we hid
 local function apply_hiding()
-  local want = {}
-  if S.shown then
+  local want, on = {}, S.shown or S.tpkeep
+  if on then
     for _, p in ipairs(S.parts) do
       for id, list in pairs(p.groups or {}) do
         if V[id] or (SCOPED[id] and (V.hide_armor and S.scoped or S.divehide)) then
@@ -1669,12 +1672,12 @@ local function apply_hiding()
   local n, uw = 0, {}
   for _, p in ipairs(S.parts) do
     if p.gear then
-      if S.shown and V[p.gear] then uw[p.u] = true end
+      if on and V[p.gear] then uw[p.u] = true end
     elseif p.groups and next(p.groups) == nil and p.u ~= (S.head and S.head.u) then
       n = n + 1
       local r = ROW['extra' .. n]
       if r then r.label = 'Piece ' .. n .. ' (on ' .. (p.bone or '?') .. ')' end
-      if S.shown and V['extra' .. n] then uw[p.u] = true end
+      if on and V['extra' .. n] then uw[p.u] = true end
     end
   end
   for i = n + 1, 4 do if ROW['extra' .. i] then ROW['extra' .. i].label = 'Piece ' .. i .. ' (none)' end end
@@ -3447,7 +3450,9 @@ local function glide(dt)
     end
   end
   local shown = S.bw >= 0.5 and inview and not easing
-  if shown ~= S.shown then S.shown = shown; apply_hiding() end
+  -- Keep hidden in third person: the Meshes page's hiding also while the game's camera is in use (not guns: S.shown)
+  local tpk = V.hide_tp and S.head ~= nil and not (S.dead or S.mend) and not shown
+  if shown ~= S.shown or tpk ~= (S.tpkeep or false) then S.shown, S.tpkeep = shown, tpk; apply_hiding() end
   if S.bw <= 0 and S.handing then hand_back() end
 end
 
