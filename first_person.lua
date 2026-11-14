@@ -2,7 +2,7 @@
 -- HD2-Requires: chef-shared-loader
 -- SHODAN First Person: a first person camera with its own settings panel.
 local chef = ...
-local M = { version = '2.2.0' }
+local M = { version = '2.2.1' }
 local log = chef.log
 -- alive(u), the answers kept for one update or draw pass (M.update/M.render set alive.c, clear it after): nothing
 -- destroys a unit while our own code runs, and the same few units were asked dozens of times a frame (timer
