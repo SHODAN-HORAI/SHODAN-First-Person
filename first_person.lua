@@ -4,10 +4,21 @@
 local chef = ...
 local M = { version = '2.1.0' }
 local log = chef.log
+-- alive(u), the answers kept for one update or draw pass (M.update/M.render set alive.c, clear it after): nothing
+-- destroys a unit while our own code runs, and the same few units were asked dozens of times a frame (timer
+-- 2026-11-14). Outside a pass (stop, menus) every answer is asked fresh. A callable table: one local, the main chunk
+-- is at Lua's 200
+local alive = setmetatable({}, { __call = function(t, u)
+  local c = t.c
+  if not c or u == nil then return chef.unit_alive(u) end
+  local a = c[u]
+  if a == nil then a = chef.unit_alive(u) == true; c[u] = a end
+  return a
+end })
 -- chef.call doesn't refuse a unit destroyed in this world (a swapped helmet): asking one ends the game
 local function call(name, a, b, ...)
   local u = name:sub(1, 5) == 'Unit.' and a or (name == 'Camera.set_local_position' or name == 'Camera.set_local_rotation' or name == 'World.update_unit') and b
-  if u and not chef.unit_alive(u) then return nil, 'gone' end
+  if u and not alive(u) then return nil, 'gone' end
   return chef.call(name, a, b, ...)
 end
 local Vec = rawget(_G, 'Vector3') or stingray.Vector3
@@ -705,8 +716,8 @@ local function unmark(u)
   if S.corpse == u then S.corpse = nil end
 end
 local function prune_corpses()
-  for u in pairs(S.corpses or {}) do if not chef.unit_alive(u) then S.corpses[u] = nil; if S.corpse_h then S.corpse_h[u] = nil end end end
-  if S.corpse ~= nil and not chef.unit_alive(S.corpse) then S.corpse = nil end
+  for u in pairs(S.corpses or {}) do if not alive(u) then S.corpses[u] = nil; if S.corpse_h then S.corpse_h[u] = nil end end end
+  if S.corpse ~= nil and not alive(S.corpse) then S.corpse = nil end
 end
 local function anim(u, all)
   if not u or S.nopod then return nil end
@@ -724,7 +735,7 @@ local function anim(u, all)
   -- the check itself refused: still never ask a body that's down
   if has == nil then if not S.said.asm then S.said.asm = true; log('animation check unavailable: %s', tostring(why)) end; if S.down_any then return nil end end
   if all then
-    if not (has == true and not (S.down_any or S.dead or S.down) and UnitApi and UnitApi.animation_get_state and chef.unit_alive(u)) then return nil end
+    if not (has == true and not (S.down_any or S.dead or S.down) and UnitApi and UnitApi.animation_get_state and alive(u)) then return nil end
     return raw_anim(pcall(UnitApi.animation_get_state, u))
   end
   return call('Unit.animation_get_state', u)
@@ -1211,7 +1222,7 @@ end
 function hide_guns()
   local want = {}
   local d = S.head and S.head.u
-  if S.shown and d and gun_watch and chef.unit_alive(d) then
+  if S.shown and d and gun_watch and alive(d) then
     local refs, nodes = {}, {}
     for _, n in ipairs(LINK_NODES) do
       refs[n] = node_at(d, n)
@@ -1222,7 +1233,7 @@ function hide_guns()
     if not rx then return end  -- no position this frame (NaN): the guns as they are, not all shown at once
     local parts, carried, moved = {}, {}, false
     for _, it in ipairs(rx and gun_watch.items or {}) do
-      if (it.x - rx) ^ 2 + (it.y - ry) ^ 2 < 100 and chef.unit_alive(it.unit) then  -- the list's spots are up to 1 s old
+      if (it.x - rx) ^ 2 + (it.y - ry) ^ 2 < 100 and alive(it.unit) then  -- the list's spots are up to 1 s old
         local g = GUNS[it.kind]
         local x, y, z = upos(it.unit)
         local p = x and { x, y, z }
@@ -1279,14 +1290,14 @@ function hide_guns()
       if best and best.on then want[m.u] = m.list end
     end
   end
-  for u in pairs(S.ghid) do if not want[u] then if chef.unit_alive(u) then gun_meshes(u, nil, false) else S.ghid[u] = nil end end end
+  for u in pairs(S.ghid) do if not want[u] then if alive(u) then gun_meshes(u, nil, false) else S.ghid[u] = nil end end end
   for u, list in pairs(want) do gun_meshes(u, list, true) end
 end
 end
 -- every gun we hid shown again at once (the mod stopping, the reset key, an error): the start-again that follows
 -- forgets S.ghid, and a mesh we hid reads as hidden, so nothing would ever show it again
 local function show_guns()
-  for u in pairs(S.ghid) do if chef.unit_alive(u) then gun_meshes(u, nil, false) end end
+  for u in pairs(S.ghid) do if alive(u) then gun_meshes(u, nil, false) end end
   S.ghid = {}
 end
 -- per unit kind, kept across missions (one resource = one skeleton, one set of meshes): its first bone of BONES and
@@ -1402,7 +1413,7 @@ local function scan_done(near)
   end
   -- ship: your Helldiver (S.mine) while it's there, never a teammate's (nothing on the ship gives you a new one)
   local gate = others_here() and not drop_seen()
-    or not chef.in_mission() and S.mine ~= nil and chef.unit_alive(S.mine)
+    or not chef.in_mission() and S.mine ~= nil and alive(S.mine)
   -- right after your drop: your Helldiver is the one that came down with the pod (30+ m below its highest point;
   -- it exists from the mission load, 2026-11-07 log), so a teammate standing where you land is never taken. None
   -- fell = nearest, as before. Solo too: a corpse the mod doesn't know as one (a death before an F11 reload) lying
@@ -1443,7 +1454,7 @@ local function scan_done(near)
   if not best then
     -- a seat whose game camera sits far off (tank crew, the Gator, the Pelican): a rescan finding nobody near that
     -- camera keeps the Helldiver you have
-    if S.head and (S.tank or S.gator or S.pel or S.tl14) and chef.unit_alive(S.head.u) then return end
+    if S.head and (S.tank or S.gator or S.pel or S.tl14) and alive(S.head.u) then return end
     S.head, S.parts = nil, {}; return
   end
   if not (S.head and S.head.u == best.u) then
@@ -1547,7 +1558,7 @@ end
 local function check_player(w)
   local h = S.head
   if h then
-    local lost = not chef.unit_alive(h.u)
+    local lost = not alive(h.u)
     if not lost then
       local ours = false
       for _, k in ipairs(S.cams) do if k.state == 'ours' or k.state == 'scope' then ours = true end end
@@ -1573,7 +1584,7 @@ local function check_player(w)
   end
   -- a piece swapped out (new helmet or armour): drop it and look for the new one soon
   local live = {}
-  for _, p in ipairs(S.parts) do if chef.unit_alive(p.u) then live[#live + 1] = p end end
+  for _, p in ipairs(S.parts) do if alive(p.u) then live[#live + 1] = p end end
   if #live < #S.parts then S.parts = live; table.insert(S.rescans, 1, S.t + 1) end
   -- in a hellpod on the ship, or its cutscene: no scans (the launch makes and removes units all at once). Nor at the
   -- galactic table: a scan from its far camera found nobody, lost the Helldiver, and S.away could never clear again
@@ -2323,7 +2334,7 @@ local function target(dt)
   -- aiming with the ballistic shield raised: the view goes into its window, whatever the other offsets. The shield
   -- model's own 'look_hole' point is the middle of the slot (12 x 5.5 cm); the view sits Distance behind it along the
   -- look, so the slot is always centred. Raised = the window ahead of the head and near its height. Eased 0.25 s
-  local hp = S.shield and chef.unit_alive(S.shu) and node_at(S.shu, 'look_hole')
+  local hp = S.shield and alive(S.shu) and node_at(S.shu, 'look_hole')
   if S.shield and not hp then once('nohole', 'shield: no window point (look_hole) found on it') end
   local raised = false
   if hp then
@@ -2563,7 +2574,7 @@ function GR.read(fx, fy, fz, dt)
   st.f = { fx, fy, fz }
   if S.shield then return V.aim_dist, true end  -- the shield's one-handed gun crosses the view a few meters out: fixed
   local g = S.gheld
-  if not (g and S.t - g.t < 0.3 and g.o and chef.unit_alive(g.u)) then st.calm = nil; return end
+  if not (g and S.t - g.t < 0.3 and g.o and alive(g.u)) then st.calm = nil; return end
   local q = call('Unit.world_rotation', g.u, 1)
   if not q then return end
   -- the gun's long axis: whichever of its three points along the aim (a held gun points within ~30 deg of it)
@@ -3983,7 +3994,7 @@ end
 function HUD.read()
   if S.mech ~= HUD.it then HUD.it, HUD.ub = S.mech, S.mech_it and HUD.body(S.mech_it) or nil end
   local u = HUD.ub
-  if not (V.hud_on and S.mech and u) or S.dead or S.down or not chef.unit_alive(u) then
+  if not (V.hud_on and S.mech and u) or S.dead or S.down or not alive(u) then
     HUD.info, HUD.ses, HUD.u, HUD.arms = nil, nil, nil, nil
     return
   end
@@ -4159,7 +4170,7 @@ function HUD.dying()
     if h and h.u ~= S.dying_u and not S.down_any then S.dying, S.dying_u = nil, nil end   -- your next Helldiver, standing
     -- a false alarm: a real death takes the body's animation away in about 4.5 s (1.2.9 logs); still there after 8 s,
     -- the body is alive and the effect ends
-    if S.dying and S.t - S.dying > 8 and chef.unit_alive(S.dying_u) and call('Unit.has_animation_state_machine', S.dying_u) == true then
+    if S.dying and S.t - S.dying > 8 and alive(S.dying_u) and call('Unit.has_animation_state_machine', S.dying_u) == true then
       S.dying, S.dying_u = nil, nil; log('death effect: the body still has its animation 8 s on, not a death: effect off')
     end
     return
@@ -4169,7 +4180,7 @@ function HUD.dying()
   if not S.down_any then
     l13 = S.l14_t == S.t and S.l14 or nil
   else
-    if not (UnitApi and UnitApi.animation_get_state and chef.unit_alive(h.u)) or call('Unit.has_animation_state_machine', h.u) ~= true then return end
+    if not (UnitApi and UnitApi.animation_get_state and alive(h.u)) or call('Unit.has_animation_state_machine', h.u) ~= true then return end
     local st = { pcall(UnitApi.animation_get_state, h.u) }
     l13 = st[1] and st[15] or nil
   end
@@ -4185,7 +4196,7 @@ function HUD.death()
   -- multiplayer: the game camera leaving your body (over 6 m and the view not ours, check_player's rule) = it shows a
   -- teammate until your reinforcement, so the black ends there (it held to 8 s, the camera left at about 6 s: 1.2.54 log)
   if not S.dth1 and t > 1 and others_here() then
-    if chef.unit_alive(S.dying_u) then S.dpos = { upos(S.dying_u, S.dying_n) } end
+    if alive(S.dying_u) then S.dpos = { upos(S.dying_u, S.dying_n) } end
     local c, p, ours = chef.camera(), S.dpos, false
     for _, k in ipairs(S.cams) do if k.state == 'ours' or k.state == 'scope' then ours = true end end
     local d = c and p and p[3] and sqrt((p[1] - c.x) ^ 2 + (p[2] - c.y) ^ 2 + (p[3] - c.z) ^ 2)
@@ -4274,7 +4285,7 @@ function HUD.ragdoll()
   -- camera falling (a throw can do it): the last read stands, so one knockdown doesn't start twice
   if (S.calm_t or 0) >= 0.5 and not (S.rag_t and S.t - S.rag_t < 0.05 and S.t >= S.rag_t) then
     S.rag_t = S.t
-    if UnitApi and UnitApi.animation_get_state and chef.unit_alive(h.u) and call('Unit.has_animation_state_machine', h.u) == true then
+    if UnitApi and UnitApi.animation_get_state and alive(h.u) and call('Unit.has_animation_state_machine', h.u) == true then
       local st = { pcall(UnitApi.animation_get_state, h.u) }
       local r = st[1] and st[32] or nil
       if r ~= S.rag then log('ragdoll layer: %s -> %s', tostring(HUD.RAGN[S.rag] or S.rag), tostring(HUD.RAGN[r] or r)); S.rag = r end
@@ -5102,7 +5113,7 @@ local function render_step()
     -- the arm swings the shield on after update too (turning): the window view goes to where the slot is now, or the
     -- slot slid across the view and caught up a frame later (user 2026-11-11: 'the shield noticeably lags')
     local se = S.she
-    local hp = se and chef.unit_alive(S.shu) and node_at(S.shu, 'look_hole')
+    local hp = se and alive(S.shu) and node_at(S.shu, 'look_hole')
     if hp then
       local mx, my, mz = hp[1] - se[5] - se[2] - dx, hp[2] - se[6] - se[3] - dy, hp[3] - se[7] - se[4] - dz
       S.tx, S.ty, S.tz = S.tx + mx * se[1], S.ty + my * se[1], S.tz + mz * se[1]
@@ -5162,23 +5173,24 @@ local function recover(hook, err)
     log('back in %g s', REC.wait)
   end
 end
-local frame_dt = 0
 local function update_now()
   if S.jhold then
-    S.jhold = S.jhold - frame_dt
+    S.jhold = S.jhold - REC.dt
     if S.jhold > 0 then return end
     S.jhold = nil
     log('ship: 0.5 s held, going on')
   end
-  if not world_gone() then step(frame_dt) end
+  if not world_gone() then step(REC.dt) end
 end
 function M.update(dt)
   if type(dt) ~= 'number' or dt ~= dt or dt < 0 or dt == math.huge then dt = 0 end
   if REC.stopped then pcall(draw_msg, dt); return end
   if REC.wait > 0 then REC.wait = REC.wait - dt; return end
-  frame_dt = dt
+  REC.dt = dt  -- (on REC, not a local: the main chunk is at Lua's 200)
   REC.live = false
+  alive.c = {}
   local ok, err = xpcall(update_now, traced)
+  alive.c = nil
   if not ok then return recover('update', err) end
   REC.live = true
   REC.clean = REC.clean + dt
@@ -5188,7 +5200,9 @@ end
 -- error until the update starts the world again, and placing the camera from it wrote a stale field of view)
 function M.render()
   if not REC.live then return end
+  alive.c = {}
   local ok, err = xpcall(render_step, traced)
+  alive.c = nil
   if not ok then recover('render', err) end
 end
 
