@@ -5,7 +5,7 @@ tuned: on foot, crouched, prone, diving, in a hellpod, driving or riding an FRV,
 on an emplacement, and each weapon can have its own setup. Settings save between launches and can be kept
 as profiles.
 
-Hold **X** for free look. You look around while your gun keeps aiming where it was, and when you let go
+Hold **J** for free look. You look around while your gun keeps aiming where it was, and when you let go
 the view swings back to your aim. How far it turns is up to you, all the way round if you want to look behind you.
 
 When you die, your view blurs, your eyes blink and close, and the screen goes black until your
@@ -30,7 +30,7 @@ reinforcement drops in. Aim with the ballistic shield raised and you look throug
 |---|---|
 | F6 | First person on or off |
 | F10 | Open the settings panel |
-| X (hold) | Free look |
+| J (hold) | Free look |
 
 Every key can be changed on the panel's Keys tab. It also has keys you can set for third person (hold or toggle) and next profile.
 
