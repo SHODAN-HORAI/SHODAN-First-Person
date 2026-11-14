@@ -3538,7 +3538,8 @@ local function cam_confirm()
     or S.mech or S.frv or S.empl or S.tank or S.gator or S.pel or S.tl14
   if busy and not c.bad then c.x = nil; return end
   local hx, hy, hz = upos(h.u, h.node)
-  local s, d, r = hx and cam_fit(g, hx, hy, hz)
+  if not hx then return end
+  local s, d, r = cam_fit(g, hx, hy, hz)
   if not s then return end
   if c.x then c.moved = c.moved + sqrt((g.x - c.x) ^ 2 + (g.y - c.y) ^ 2 + (g.z - c.z) ^ 2) end
   c.x, c.y, c.z = g.x, g.y, g.z
