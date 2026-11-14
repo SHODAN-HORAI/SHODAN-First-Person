@@ -480,10 +480,10 @@ local TABS = {
   { name = 'KEYS', rows = {
     { head = 'FIRST PERSON' },
     { id = 'toggle', label = 'First person on/off', key = true, def = 'f6', hint = 'Press RIGHT, then the new key. DELETE sets none.' },
-    { id = 'freelook', label = 'Free look', key = true, def = 'left alt',
+    { id = 'freelook', label = 'Hold for free look', key = true, def = 'left alt',
       hint = 'Hold to look around while your gun keeps aiming where it was. Let go and the view swings back. Press RIGHT, then the new key.' },
-    { id = 'fl_full', label = 'Free look: full 360', toggle = true, def = false,
-      hint = 'Off: free look turns up to 75 deg to each side. On: all the way round, so you can look behind you.' },
+    { id = 'fl_max', label = 'Free look: furthest turn', min = 15, max = 180, step = 5, def = 75, unit = ' deg',
+      hint = 'How far free look turns to each side. 180 = all the way round, so you can look behind you.' },
     { id = 'peek', label = 'Hold for third person', key = true, def = 'off',
       hint = 'Hold to see the game\'s camera, let go to go back. Press RIGHT, then the new key.' },
     { id = 'tp_key', label = 'Toggle for third person', key = true, def = 'off',
@@ -503,6 +503,12 @@ local TABS = {
     { id = 'tab_next', label = 'Next tab', key = true, def = 'd', hint = 'Moves to the tab on the right. Press RIGHT, then the new key.' },
   } },
 }
+-- free look's rows also show at the top of CAMERA, under PROFILE (user): the same row tables, so both set one value
+for i = #TABS[#TABS].rows, 1, -1 do
+  local r = TABS[#TABS].rows[i]
+  if r.id == 'freelook' or r.id == 'fl_max' then table.insert(TABS[1].rows, 3, r) end
+end
+table.insert(TABS[1].rows, 3, { head = 'FREE LOOK' })
 for _, tab in ipairs(TABS) do  -- every tab ends with its own reset button
   tab.rows[#tab.rows + 1] = { reset_tab = true, label = 'RESET THIS TAB TO DEFAULT',
     hint = 'Puts every setting on this tab back to default (every model on model tabs). Press twice to confirm.' }
@@ -513,7 +519,7 @@ end
 -- the per-weapon rows and the weapon list; its helpers live on it too (the main chunk is at Lua's 200-local limit)
 local WP = { sel = nil, live = nil, tgt = {}, marks = {}, ROW = {}, LIST = {} }
 do
-  local NOT_WPN = { SWITCHING = true, ['(Experimental, report issues!)'] = true, DEATH = true, TILT = true,
+  local NOT_WPN = { ['FREE LOOK'] = true, SWITCHING = true, ['(Experimental, report issues!)'] = true, DEATH = true, TILT = true,
     gun_dist = true, empl_dist = true, seat_ease = true }
   for _, tab in ipairs(TABS) do
     if tab.name == 'CAMERA' or tab.name == 'AIM' or tab.name == 'STANCE' then
@@ -576,7 +582,7 @@ for i = #TABS, 1, -1 do if TABS[i].name == 'IMMERSE' then table.remove(TABS, i) 
 local binds = {}
 for _, tab in ipairs(TABS) do
   for _, r in ipairs(tab.rows) do
-    if r.id then  -- headings and the reset button have none
+    if r.id and ROW[r.id] ~= r then  -- headings and the reset button have none; free look's rows sit in two tabs
       r.def0 = r.def
       if MY_DEF[r.id] ~= nil then r.def = MY_DEF[r.id] end
       ROW[r.id] = r
@@ -3959,7 +3965,7 @@ end
 -- the pair 699050, 800 at some field d, and field d - 1 turns 2 once that arm is destroyed.
 local HUD = { next = 0 }
 -- Free look (KEYS tab): while the key is held the loader holds the mouse from the game, so its aim, your gun and the
--- crosshair stay put, and the mouse turns only our view, 75 deg each side (180 with 'Free look: full 360'). Let go:
+-- crosshair stay put, and the mouse turns only our view, up to 'Free look: furthest turn' each side. Let go:
 -- it eases back to the aim. Turn per mouse step is learnt from normal on-foot play (view turn vs mouse step, sign included), so it matches the
 -- game's sensitivity. Only while our view is on the game's main camera (not scoped, not in a mech).
 function HUD.free_step(dt)
@@ -3982,7 +3988,7 @@ function HUD.free_step(dt)
   if chef.mouse_delta and not P.open then dx, dy = chef.mouse_delta(); dx, dy = dx or 0, dy or 0 end
   if on then
     local ap = F.ap or 0
-    local L = V.fl_full and 180 or 75
+    local L = V.fl_max
     F.x = max(-L, min(L, F.x + dx * rate(F.lx)))
     F.y = max(-85 - ap, min(85 - ap, F.y + dy * rate(F.ly)))
     F.pv = nil
