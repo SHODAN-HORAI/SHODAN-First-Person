@@ -1873,7 +1873,7 @@ local function stance(dt, ox, oy, oz, rx, ry)
   -- and the head 0.45 m out: landing from a step or ledge while moving dips the head to 1.03-1.10 m, 0.30-0.31 m
   -- out (a dive there: 0.37 m, and 0.64+ by the time it's low), and that 'dive' pushed the view forward and back
   -- (report 2026-11-11: snaps on every small drop). Head-drop speed didn't tell them apart (landings 2.7-5.9 m/s)
-  if not dv and S.fall and not S.rising and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) and r < 0.75 and l > 0.3 and (ox * S.fall[1] + oy * S.fall[2]) / l > 0.5 then
+  if not dv and S.fall and not S.rising and not S.nodive and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) and r < 0.75 and l > 0.3 and (ox * S.fall[1] + oy * S.fall[2]) / l > 0.5 then
     dv = l > 0.45
   end
   -- S.diving = the hide switch for this dive's direction, or false
@@ -1886,6 +1886,12 @@ local function stance(dt, ox, oy, oz, rx, ry)
   S.set_t = S.rising and S.stance == 'crouch' and abs(S.ozv) < 0.2 and (S.set_t or 0) + dt or 0
   if S.set_t >= 0.3 and not S.crup then S.crup, S.fall, S.dive = S.t, nil, nil; log('settled in a crouch') end
   if not dv and S.diving and not seated and S.up_t < 0.3 and not S.crup then dv = S.diving end
+  -- real dives are low within 0.5 s (21 logged); crouch-walking with the head 0.45+ m out passed the head-out rule and
+  -- held the dive push until you stood (up to 21 s crouched, user 2026-11-14): not low by 0.7 s ends it, and that rule
+  -- stays off until the head is back over the feet or low (a real dive from there is still caught once low)
+  if dv and not S.diving then S.dive_t, S.dlow = S.t, false end
+  if r < 0.5 then S.dlow, S.nodive = true, nil elseif l < 0.3 then S.nodive = nil end
+  if dv and not S.dlow and S.t - (S.dive_t or S.t) > 0.7 then dv, S.nodive = false, true; log('not a dive: head still %.2f m over the feet after 0.7 s (%s)', oz, S.stance or 'stand') end
   -- getting up: risen out of prone, until standing the same way
   S.rise_t = S.rising and (S.rise_t or 0) + (r > 0.5 and dt or 0) or 0
   if S.stance == 'prone' and oz > 0.1 and not seated and S.rise_t < 3 then S.rising, S.crup = true, nil elseif seated or S.up_t >= 0.3 or S.rise_t >= 3 or S.crup then S.rising, S.pidle, S.prone_t = false, nil, 0 end
