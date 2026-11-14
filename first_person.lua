@@ -483,7 +483,7 @@ local TABS = {
     { id = 'freelook', label = 'Free look', key = true, def = 'left alt',
       hint = 'Hold to look around while your gun keeps aiming where it was. Let go and the view swings back. Press RIGHT, then the new key.' },
     { id = 'fl_full', label = 'Free look: full 360', toggle = true, def = false,
-      hint = 'Off: free look turns up to 90 deg to each side. On: all the way round, so you can look behind you.' },
+      hint = 'Off: free look turns up to 75 deg to each side. On: all the way round, so you can look behind you.' },
     { id = 'peek', label = 'Hold for third person', key = true, def = 'off',
       hint = 'Hold to see the game\'s camera, let go to go back. Press RIGHT, then the new key.' },
     { id = 'tp_key', label = 'Toggle for third person', key = true, def = 'off',
@@ -3959,7 +3959,7 @@ end
 -- the pair 699050, 800 at some field d, and field d - 1 turns 2 once that arm is destroyed.
 local HUD = { next = 0 }
 -- Free look (KEYS tab): while the key is held the loader holds the mouse from the game, so its aim, your gun and the
--- crosshair stay put, and the mouse turns only our view, 90 deg each side (180 with 'Free look: full 360'). Let go:
+-- crosshair stay put, and the mouse turns only our view, 75 deg each side (180 with 'Free look: full 360'). Let go:
 -- it eases back to the aim. Turn per mouse step is learnt from normal on-foot play (view turn vs mouse step, sign included), so it matches the
 -- game's sensitivity. Only while our view is on the game's main camera (not scoped, not in a mech).
 function HUD.free_step(dt)
@@ -3982,7 +3982,7 @@ function HUD.free_step(dt)
   if chef.mouse_delta and not P.open then dx, dy = chef.mouse_delta(); dx, dy = dx or 0, dy or 0 end
   if on then
     local ap = F.ap or 0
-    local L = V.fl_full and 180 or 90
+    local L = V.fl_full and 180 or 75
     F.x = max(-L, min(L, F.x + dx * rate(F.lx)))
     F.y = max(-85 - ap, min(85 - ap, F.y + dy * rate(F.ly)))
     F.pv = nil
