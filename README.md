@@ -5,6 +5,9 @@ tuned: on foot, crouched, prone, diving, in a hellpod, driving or riding an FRV,
 on an emplacement, and each weapon can have its own setup. Settings save between launches and can be kept
 as profiles.
 
+Hold **X** for free look. You look around while your gun keeps aiming where it was, and when you let go
+the view swings back to your aim. How far it turns is up to you, all the way round if you want to look behind you.
+
 When you die, your view blurs, your eyes blink and close, and the screen goes black until your
 reinforcement drops in. Aim with the ballistic shield raised and you look through its window slot.
 
@@ -27,6 +30,7 @@ reinforcement drops in. Aim with the ballistic shield raised and you look throug
 |---|---|
 | F6 | First person on or off |
 | F10 | Open the settings panel |
+| X (hold) | Free look |
 
 Every key can be changed on the panel's Keys tab. It also has keys you can set for third person (hold or toggle) and next profile.
 
@@ -37,7 +41,7 @@ it's in your hands.
 
 | Tab | What you can change |
 |---|---|
-| Camera | Camera position, field of view, aiming field of view, smoothing, profiles, the ballistic shield view, sprint tilt, the death effect and knockdown daze, and when to switch to third person (galactic map, mission terminals, map and stratagem menu) |
+| Camera | Free look, camera position, field of view, aiming field of view, smoothing, profiles, the ballistic shield view, sprint tilt, the death effect and knockdown daze, and when to switch to third person (galactic map, mission terminals, map and stratagem menu) |
 | Aim | Crosshair follows the gun: keeps your shots where the crosshair points, while aiming and from the hip |
 | Stance | Its own camera position and field of view when crouched or prone, how the view behaves when diving, lying down, knocked down and getting up |
 | Meshes | Hide any part of your helldiver from view, the guns in hand or on your back, and armour while scoped |
