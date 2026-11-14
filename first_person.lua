@@ -271,6 +271,13 @@ local TABS = {
       hint = 'Extra height during that reload.' },
     { id = 'srl_side', label = 'Sideways', min = -0.6, max = 0.6, step = 0.01, def = 0, unit = ' m',
       hint = 'Move the view left (minus) or right during that reload.' },
+    { head = 'SLIDING' },
+    { id = 'slide_fwd', label = 'Forward', min = -0.4, max = 0.4, step = 0.01, def = 0.08, unit = ' m',
+      hint = 'Extra forward or back while you slide, so the view stays out of your armour.' },
+    { id = 'slide_up', label = 'Height', min = -0.4, max = 0.4, step = 0.01, def = 0.05, unit = ' m',
+      hint = 'Extra height while you slide.' },
+    { id = 'slide_side', label = 'Sideways', min = -0.6, max = 0.6, step = 0.01, def = 0, unit = ' m',
+      hint = 'Move the view left (minus) or right while you slide.' },
     { head = 'LYING DOWN' },
     { id = 'eyes', label = 'View from past the head when down', toggle = true, def = false,
       hint = 'While diving or lying, the view sits just past the top of your head, following the animation, so it stays out of your body.' },
@@ -1871,7 +1878,7 @@ local function stance(dt, ox, oy, oz, rx, ry)
   local hv = S.poz and dt > 0 and (oz - S.poz) / dt or 0
   S.poz, S.ozv = oz, (S.ozv or 0) + (hv - (S.ozv or 0)) * (1 - exp(-dt * 20))
   if r > 0.75 then S.fall, S.dive = nil, nil
-  elseif not S.fall then
+  elseif not S.fall and not S.slide then  -- a slide drops the head to 0.57-0.9 m at 4-6 m/s: read as a dive (log 2026-11-14)
     local v = sqrt(S.vx * S.vx + S.vy * S.vy)
     -- not while still low in a get-up or lying: the get-up animation and fast crawling move the feet 1.5+ m/s, and
     -- that 'fall' cut the get-up and started a dive half way up (log 2026-11-11, 95.9 s and 121.8 s)
@@ -1940,7 +1947,7 @@ local function stance(dt, ox, oy, oz, rx, ry)
   local cur = S.stance or 'stand'
   local new = cur
   if cur == 'stand' and r < 0.75 or cur == 'prone' and r > 0.5 then new = 'crouch' end
-  if r < 0.45 then new = 'prone' elseif r > 0.85 then new = 'stand' end
+  if r < 0.45 and not S.slide then new = 'prone' elseif r > 0.85 then new = 'stand' end
   if new ~= cur then S.stance = new; log('stance %s (head %.2f m over feet, tallest %.2f, moving %+.1f m/s)', new, oz, S.hmax, S.ozv or 0) end
   local st = STANCES[S.stance or 'stand']
   -- lying (dive or prone) and looking back along your own body: lift the view over the back and the gun on it
@@ -1985,7 +1992,7 @@ local function stance(dt, ox, oy, oz, rx, ry)
     away = hl < 1e-4 or (ox * c.fx + oy * c.fy) / (l * hl) < 0.5
   end
   if not S.down then
-    S.down_t = (r < 0.5 and away and not S.dive) and (S.down_t or 0) + dt or 0
+    S.down_t = (r < 0.5 and away and not S.dive and not S.slide) and (S.down_t or 0) + dt or 0
     if S.down_t > 0.2 then S.down, S.down_t = true, 0; log('knocked down (head %.2f m, %.2f m off the feet)', oz, l) end
   else
     S.down_t = r > 0.6 and (S.down_t or 0) + dt or 0
@@ -2233,6 +2240,13 @@ local function target(dt)
     if (b > 0) ~= (S.srlb or false) then S.srlb = b > 0; log('stationary reload: looking back %s (facing %.2f)', S.srlb and 'on' or 'off', fc) end
     local e = S.srlw * S.srlw * (3 - 2 * S.srlw) * b * b * (3 - 2 * b)
     f, up, sd = f + e * V.srl_fwd, up + e * V.srl_up, sd + e * V.srl_side
+  end
+  -- sliding: the SLIDING offsets, eased in and out (S.slide is set in seat_layer_step)
+  local sl = S.slide and S.act and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) or false
+  S.slidew = max(0, min(1, (S.slidew or 0) + (sl and dt or -dt) / 0.2))
+  if S.slidew > 0 then
+    local e = S.slidew * S.slidew * (3 - 2 * S.slidew)
+    f, up, sd = f + e * V.slide_fwd, up + e * V.slide_up, sd + e * V.slide_side
   end
   -- the ballistic shield in your hand (seen in a hand within 0.3 s); its window view is set at the end
   S.shield = S.shield_t ~= nil and S.t - S.shield_t < 0.3 and S.act and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) or false
@@ -4848,6 +4862,24 @@ local function seat_layer_step(dt)
   local srl = l11 == 655 or l11 == 656 or l11 == 665 or l11 == 666 or l11 == 685 or l11 == 688 or l11 == 689 or l11 == 690 or l11 == 691
     or l11 == 718 or l11 == 719
   if srl ~= (S.srl or false) then S.srl = srl; log('stationary reload %s (layer 11 = %s)', srl and 'start' or 'end', tostring(l11)) end
+  -- sliding (SLIDING offsets), layer 2 (avatar_states.txt layer 1): 2/3 slide + exit from a crouch, 40/41 from standing;
+  -- 31/32 and 69/70 slope slides (back/forward) crouched and standing. Prone slope slides (37/38) are lying: left out
+  local l2 = L and L[2]
+  local sl = l2 == 2 or l2 == 3 or l2 == 40 or l2 == 41 or l2 == 31 or l2 == 32 or l2 == 69 or l2 == 70
+  -- the slide state lasts only 0.2-0.3 s while the body slides on: layer 2 goes 2 -> 1 -> 3 -> 4 -> 5 -> 43 (or 42),
+  -- standing at ~1.1 s (log 2026-11-14), so the offsets dropped mid-slide and it clipped at the end. Held while layer 2
+  -- stays in that sequence, until you have stood or slowed under 1 m/s for 0.25 s (at most 2 s after the slide state).
+  -- While held, no prone, dive or knockdown: low slides (head 0.57 m) read as both and ran the get-up for ~1 s
+  if sl then S.slide_t, S.slide_ok = S.t, nil
+  elseif S.slide and S.slide_t then
+    local vx, vy = S.vx or 0, S.vy or 0
+    if S.stance == 'stand' or vx * vx + vy * vy < 1 then S.slide_ok = S.slide_ok or S.t else S.slide_ok = nil end
+    sl = (l2 == 1 or l2 == 4 or l2 == 5 or l2 == 42 or l2 == 43) and not (S.slide_ok and S.t - S.slide_ok >= 0.25 or S.t - S.slide_t > 2)
+  end
+  if sl ~= (S.slide or false) then
+    S.slide = sl
+    log('slide %s (layer 2 = %s, %s, %.1f m/s)', sl and 'start' or 'end', tostring(l2), S.stance or '?', sqrt((S.vx or 0) ^ 2 + (S.vy or 0) ^ 2))
+  end
   local l14 = type(S.l14) == 'number' and S.l14 or -1
   S.tl14 = L14.TANK[l14]
   local g = L14.GATOR[l14] or false
