@@ -228,6 +228,13 @@ local TABS = {
       hint = 'Move the view left (minus) or right while you lie down.' },
     { id = 'prone_fov', label = 'Field of view', min = 0, max = 120, step = 1, def = 0, unit = ' deg', zero = 'SAME',
       hint = 'Up-down view angle while you lie down. SAME = the normal field of view.' },
+    { head = 'STATIONARY RELOAD' },
+    { id = 'srl_fwd', label = 'Forward', min = -0.4, max = 0.4, step = 0.01, def = 0, unit = ' m',
+      hint = 'Extra forward or back while you reload a support weapon that holds you in place (Autocannon, Recoilless, Spear, Airburst, WASP), standing or crouched. Eases in and out.' },
+    { id = 'srl_up', label = 'Height', min = -0.4, max = 0.4, step = 0.01, def = 0, unit = ' m',
+      hint = 'Extra height during that reload.' },
+    { id = 'srl_side', label = 'Sideways', min = -0.6, max = 0.6, step = 0.01, def = 0, unit = ' m',
+      hint = 'Move the view left (minus) or right during that reload.' },
     { head = 'DIVING' },
     { id = 'dive_hide', label = 'Hide collar and shoulders: forward', toggle = true, def = true,
       hint = 'Hides the neck, body and shoulder armour from the start of a forward dive until you stand up, so the view is not inside the collar.' },
@@ -2120,6 +2127,14 @@ local function target(dt)
   if S.aimw > 0 then
     local e = S.aimw * S.aimw * (3 - 2 * S.aimw)   -- eased: starts and ends gently
     f, up, sd = f + e * V.aimpos_fwd, up + e * V.aimpos_up, sd + e * V.aimpos_side
+  end
+  -- a stationary reload (support weapons that hold you in place): the STATIONARY RELOAD offsets, eased in and out
+  -- (S.srl is set in seat_layer_step)
+  local srl = S.srl and S.act and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) or false
+  S.srlw = max(0, min(1, (S.srlw or 0) + (srl and dt or -dt) / 0.25))
+  if S.srlw > 0 then
+    local e = S.srlw * S.srlw * (3 - 2 * S.srlw)
+    f, up, sd = f + e * V.srl_fwd, up + e * V.srl_up, sd + e * V.srl_side
   end
   -- the ballistic shield in your hand (seen in a hand within 0.3 s); its window view is set at the end
   S.shield = S.shield_t ~= nil and S.t - S.shield_t < 0.3 and S.act and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) or false
@@ -4623,6 +4638,11 @@ local function seat_layer_step(dt)
   local L = chef.in_mission() and S.head and layers()
   if L then S.l14, S.l14_t = L[14], S.t
   elseif S.l14_t and S.t - S.l14_t > 1 then S.l14, S.l14_t = nil, nil end
+  -- stationary reload (STATIONARY RELOAD offsets), layer 11 (avatar_states.txt layer 10), standing or crouched: 688
+  -- Recoilless, 689 Airburst, 690/691 Autocannon (normal/fast), 718 Spear, 719 WASP (log 2026-11-13). Prone ones (268, 269, 274, 275, 302) left out
+  local l11 = L and L[11]
+  local srl = l11 == 688 or l11 == 689 or l11 == 690 or l11 == 691 or l11 == 718 or l11 == 719
+  if srl ~= (S.srl or false) then S.srl = srl; log('stationary reload %s (layer 11 = %s)', srl and 'start' or 'end', tostring(l11)) end
   local l14 = type(S.l14) == 'number' and S.l14 or -1
   S.tl14 = L14.TANK[l14]
   local g = L14.GATOR[l14] or false
