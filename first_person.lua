@@ -177,7 +177,7 @@ local TABS = {
       hint = 'Running or sprinting (not aiming) the gun is carried low and cannot be lined up: the crosshair is exact at this distance instead. An enemy under it still wins. Read from the game: needs the running state.' },
     { id = 'aim_ease', label = 'Correction time', min = 0, max = 2, step = 0.05, def = 0.15, unit = ' s',
       hint = 'How long the view takes to adjust when you aim or the target distance changes. Longer feels less like aim assist.' },
-    { id = 'aim_max', label = 'Largest turn', min = 2, max = 20, step = 1, def = 8, unit = ' deg',
+    { id = 'aim_max', label = 'Largest turn', min = 2, max = 20, step = 1, def = 20, unit = ' deg',
       hint = 'The most the view may turn off the game aim. Up close the needed turn is bigger; above this it stops at this angle.' },
     { id = 'aim_ground', label = 'Line up at the ground', toggle = true, def = true,
       hint = 'Looking down on foot, the crosshair sits where your shots meet the ground, not on a point under it.' },
@@ -199,14 +199,14 @@ local TABS = {
     { head = 'WHILE AIMING' },
     { id = 'aim_strength', label = 'Strength', min = 1, max = 10, step = 1, def = 10,
       hint = 'How much of the gap to the game aim gets corrected while aiming. 10 = exact, lower = gentler turns, shots land a bit off.' },
-    { id = 'aim_range', label = 'Correct for enemies', toggle = true, def = false,
+    { id = 'aim_range', label = 'Correct for enemies', toggle = true, def = true,
       hint = 'Use the distance of the enemy under the crosshair instead of the fixed distance. Stronger turns up close.' },
     { head = 'HIP FIRE' },
     { id = 'aim_hip', label = 'Correct hip fire', toggle = true, def = true,
       hint = 'Corrects the crosshair when not aiming too, at the fixed distance, so hip-fire shots land on it.' },
-    { id = 'hip_range', label = 'Correct for enemies', toggle = true, def = false,
+    { id = 'hip_range', label = 'Correct for enemies', toggle = true, def = true,
       hint = 'Also correct for the enemy under the crosshair, so close shots land on it too. Stronger turns.' },
-    { id = 'hip_strength', label = 'Enemy strength', min = 1, max = 10, step = 1, def = 5,
+    { id = 'hip_strength', label = 'Enemy strength', min = 1, max = 10, step = 1, def = 10,
       hint = 'With Correct for enemies on: how much of the extra turn toward a close enemy is made. 10 = exact, lower = gentler.' },
     { id = 'hip_ease', label = 'Enemy time', min = 0, max = 2, step = 0.05, def = 0.4, unit = ' s',
       hint = 'With Correct for enemies on: how long the view takes to adjust when an enemy comes under the crosshair or leaves it.' },
@@ -2736,9 +2736,12 @@ local function held_range(D, u)
   S.hr = h
   if D then
     h.lost = nil
-    if h.cu ~= u or not h.cd or abs(D - h.cd) > max(1, h.cd * 0.05) then h.cu, h.cd, h.since = u, D, S.t end
-    if S.t - h.since >= ((h.u and h.u ~= u) and 0.25 or 0.15) then
-      if not h.d or h.u ~= u or abs(h.cd - h.d) >= max(1.5, h.d * 0.05) then h.d = h.cd end
+    -- the same enemy is followed at once (a charging one outran the 0.15 s wait and the 1.5 m step: shots up close
+    -- landed right, 2.1.43 log); only a new enemy waits, so a crowd doesn't flip the view between them
+    if h.cu ~= u or not h.cd then h.cu, h.since = u, S.t end
+    h.cd = D
+    if h.u == u or S.t - h.since >= (h.u and 0.25 or 0.15) then
+      if not h.d or h.u ~= u or abs(h.cd - h.d) >= max(0.3, h.d * 0.05) then h.d = h.cd end
       h.u = u
     end
   else
