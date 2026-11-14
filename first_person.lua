@@ -480,8 +480,10 @@ local TABS = {
   { name = 'KEYS', rows = {
     { head = 'FIRST PERSON' },
     { id = 'toggle', label = 'First person on/off', key = true, def = 'f6', hint = 'Press RIGHT, then the new key. DELETE sets none.' },
-    { id = 'freelook', label = 'Free look (immersive mode)', key = true, def = 'left alt',
-      hint = 'Hold to look around while your body stays where it is. Let go and the body turns to catch up. Press RIGHT, then the new key.' },
+    { id = 'freelook', label = 'Free look', key = true, def = 'left alt',
+      hint = 'Hold to look around while your gun keeps aiming where it was. Let go and the view swings back. Press RIGHT, then the new key.' },
+    { id = 'fl_full', label = 'Free look: full 360', toggle = true, def = false,
+      hint = 'Off: free look turns up to 90 deg to each side. On: all the way round, so you can look behind you.' },
     { id = 'peek', label = 'Hold for third person', key = true, def = 'off',
       hint = 'Hold to see the game\'s camera, let go to go back. Press RIGHT, then the new key.' },
     { id = 'tp_key', label = 'Toggle for third person', key = true, def = 'off',
@@ -568,12 +570,9 @@ end
 local MY_DEF = { frv_fwd = 0.08, frv_up = -0.08, frv_side = 0, frvp_fwd = 0, frvp_up = 0, frvp_side = 0, sp_frv_fwd = 0.08, sp_frv_up = -0.08, sp_frv_side = 0, sp_frvp_fwd = 0, sp_frvp_up = 0, sp_frvp_side = 0, fl_frv_fwd = 0.08, fl_frv_up = -0.08, fl_frv_side = 0, fl_frvp_fwd = 0, fl_frvp_up = 0, fl_frvp_side = 0, se_frv_fwd = 0.08, se_frv_up = -0.08, se_frv_side = 0, se_frvp_fwd = 0, se_frvp_up = 0, se_frvp_side = 0, frvg_fwd = 0, frvg_up = 0.06, frvg_side = 0, fl_frvg_fwd = 0, fl_frvg_up = 0.06, fl_frvg_side = 0,
   se_frvg_fwd = 0, se_frvg_up = 0.06, se_frvg_side = 0,
   tp_empl = false, at_tp_empl = false, empl_up = 0.15 }
--- immersive mode paused (user, 2026-11-07): tab + free look key hidden, V.imm_on stays nil so neck() never runs
-for i = #TABS, 1, -1 do
-  local t = TABS[i]
-  if t.name == 'IMMERSE' then table.remove(TABS, i) end
-  for j = #t.rows, 1, -1 do if t.rows[j].id == 'freelook' then table.remove(t.rows, j) end end
-end
+-- immersive mode paused (user, 2026-11-07): tab hidden, V.imm_on stays nil so neck() never runs. The free look key is
+-- live again (2.1.37, HUD.free_step): it turns only the view now, the body is left to the game
+for i = #TABS, 1, -1 do if TABS[i].name == 'IMMERSE' then table.remove(TABS, i) end end
 local binds = {}
 for _, tab in ipairs(TABS) do
   for _, r in ipairs(tab.rows) do
@@ -3112,12 +3111,36 @@ function MECH.tilt(k, cam)
   if not k.rq then once('rq', 'sprint tilt: first lean written (%.1f deg)', a) end
   k.rq = true; wrote(k, nq); k.pre = nil
 end
--- a hand-off to the scope or a far camera: a lean still on it goes (the game only rewrites it when the mouse moves)
+-- a hand-off to the scope or a far camera: a lean or free look turn still on it goes (the game only rewrites it when
+-- the mouse moves)
 function MECH.untilt(k, cam)
-  if not (k.rq and cam) then return end
+  if not ((k.rq or k.fq) and cam) then return end
   local base, mine = game_rot(k, cam)
   if base and mine then call('Camera.set_local_rotation', cam, k.u, base) end
-  k.rq, k.last = nil, nil
+  k.rq, k.fq, k.last = nil, nil, nil
+end
+-- free look's turn (S.fl.x yaw, .y pitch, deg; set by HUD.free_step) on top of what this pass wrote, else the game's
+-- look. Written before the sprint tilt so the lean still applies.
+function MECH.free_look(k, cam)
+  local F = S.fl
+  local on = F and (F.x ~= 0 or F.y ~= 0)
+  if not (on or k.fq) then return end
+  local pre, mine = k.pre_n == S.pn and k.pre or nil, nil
+  if not pre then pre, mine = game_rot(k, cam); if not pre then return end end
+  if not on then
+    if k.fq and mine then call('Camera.set_local_rotation', cam, k.u, pre); k.last = nil end
+    k.fq = nil; return
+  end
+  local fx, fy, fz = xyz(call('Quaternion.forward', pre))
+  if not (finite(fx) and finite(fy) and finite(fz)) then return end
+  F.ap = math.deg(math.asin(max(-1, min(1, fz))))  -- the aim's pitch, so the step keeps the total within 85 deg
+  local y, p = math.atan2(fy, fx) + math.rad(F.x), math.rad(max(-85, min(85, F.ap + F.y)))
+  local cp = math.cos(p)
+  local nq = call('Quaternion.look', Vec(cp * math.cos(y), cp * math.sin(y), math.sin(p)), Vec(0, 0, 1))
+  local _, why = call('Camera.set_local_rotation', cam, k.u, nq)
+  if why then once('fq' .. tostring(why), 'free look: rotation write refused: %s', tostring(why)); return end
+  if not k.fq then once('fq', 'free look: first turn written (%.0f deg side, %.0f up)', F.x, F.y) end
+  k.fq = true; wrote(k, nq)
 end
 function MECH.line(k, cam, state, hx, hy, hz, mx, my, mz, mfx, mfy)
   local base = game_rot(k, cam)
@@ -3354,6 +3377,7 @@ local function place(w)
             if not k.qw then view_limit(k, cam, S.dt or 0.016) end
             if not (k.qw or k.yq) then turn_hold(k, cam, S.dt or 0.016) end
             if not (k.qw or k.yq or k.tq) then k.qlog = nil; aim_fix(k, cam, S.dt or 0.016) end
+            MECH.free_look(k, cam)
             MECH.tilt(k, cam)
           end
           -- Cut the cockpit (MECHS tab): a mech's own near range clears its frame and arm housing from the view
@@ -3934,6 +3958,56 @@ end
 -- order front L, front R, rear, hips, left leg, right leg), 19[6] the arm objects (left, right). An arm object holds
 -- the pair 699050, 800 at some field d, and field d - 1 turns 2 once that arm is destroyed.
 local HUD = { next = 0 }
+-- Free look (KEYS tab): while the key is held the loader holds the mouse from the game, so its aim, your gun and the
+-- crosshair stay put, and the mouse turns only our view, 90 deg each side (180 with 'Free look: full 360'). Let go:
+-- it eases back to the aim. Turn per mouse step is learnt from normal on-foot play (view turn vs mouse step, sign included), so it matches the
+-- game's sensitivity. Only while our view is on the game's main camera (not scoped, not in a mech).
+function HUD.free_step(dt)
+  local F = S.fl
+  if not F then F = { x = 0, y = 0, lx = { 0, 0, 0 }, ly = { 0, 0, 0 } }; S.fl = F end
+  local ours = false
+  for _, k in ipairs(S.cams) do if k.main and k.state == 'ours' then ours = true end end
+  local on = binds.freelook and binds.freelook.down() and S.act and ours and not (S.mech or P.open) or false
+  -- shortcut: 0.05 deg per step until learnt (a few seconds of turning on foot)
+  local function rate(L) return L[2] > 50 and (L[3] < 0 and -1 or 1) * L[1] / L[2] or -0.05 end
+  if on ~= (F.held or false) then
+    if not P.open and chef.hold_mouse then
+      local ok, why = chef.hold_mouse(on)
+      if on and not ok then once('flh', 'free look: mouse hold refused: %s', tostring(why)) end
+    end
+    F.held = on
+    log('free look %s (%.4f / %.4f deg per mouse step%s)', on and 'on' or 'off', rate(F.lx), rate(F.ly), F.lx[2] > 50 and '' or ', not learnt yet')
+  end
+  local dx, dy = 0, 0
+  if chef.mouse_delta and not P.open then dx, dy = chef.mouse_delta(); dx, dy = dx or 0, dy or 0 end
+  if on then
+    local ap = F.ap or 0
+    local L = V.fl_full and 180 or 90
+    F.x = max(-L, min(L, F.x + dx * rate(F.lx)))
+    F.y = max(-85 - ap, min(85 - ap, F.y + dy * rate(F.ly)))
+    F.pv = nil
+    return
+  end
+  local g = exp(-dt / 0.06)
+  F.x, F.y = F.x * g, F.y * g
+  if abs(F.x) + abs(F.y) < 0.2 then F.x, F.y = 0, 0 end
+  -- learning: the shown view's turn this frame against this frame's mouse step (frames with a step, or right after one)
+  local c = chef.camera()
+  local learn = F.x == 0 and F.y == 0 and S.act and not (S.aim or S.frv or S.mech or S.empl or S.tank or S.gator or S.pel)
+    and c and finite(c.fx) and finite(c.fy) and finite(c.fz)
+  if not learn then F.pv = nil; return end
+  local vy, vp = math.deg(math.atan2(c.fy, c.fx)), math.deg(math.asin(max(-1, min(1, c.fz))))
+  local pv = F.pv
+  F.pv = { vy, vp, dx, dy }
+  if not pv then return end
+  local function add(L, d, m, pm)
+    if (m == 0 and pm == 0) or abs(d) > 20 then return end
+    L[1], L[2], L[3] = L[1] * 0.995 + abs(d), L[2] * 0.995 + abs(m), L[3] * 0.995 + d * m
+  end
+  add(F.lx, wrap(vy - pv[1]), dx, pv[3])
+  add(F.ly, vp - pv[2], dy, pv[4])
+end
+
 -- per mech model (its settings prefix): left and right arm, their name and the field with the rounds left (and spare)
 HUD.ARMS = {
   [''] = { { 'ROCKETS', 6 }, { 'MINIGUN', 6 } },
@@ -5090,6 +5164,7 @@ local function step(dt)
   if ra ~= (S.runaim or false) then log('aim: %s', ra and string.format('running, lined up at %d m', V.run_dist) or 'running ended') end
   S.runaim = ra
   neck(w)
+  HUD.free_step(dt)
   -- in a mech the game narrows its view as the mech aims: first person keeps the widest seen in this mech. The game
   -- camera cutting somewhere else (1.5 m in a frame: from the on-foot camera while climbing in to the mech's own)
   -- starts the learning again, so the on-foot field of view is never taken as the mech's; an aim zoom keeps its spot
