@@ -26,10 +26,9 @@ reinforcement drops in. Aim with the ballistic shield raised and you look throug
 | Key | What it does |
 |---|---|
 | F6 | First person on or off |
-| F7 | Hold for third person |
 | F10 | Open the settings panel |
 
-Every key can be changed on the panel's Keys tab, along with next profile.
+Every key can be changed on the panel's Keys tab. It also has keys you can set for third person (hold or toggle) and next profile.
 
 ## Settings panel
 

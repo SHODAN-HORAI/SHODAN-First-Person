@@ -475,8 +475,10 @@ local TABS = {
     { id = 'toggle', label = 'First person on/off', key = true, def = 'f6', hint = 'Press RIGHT, then the new key. DELETE sets none.' },
     { id = 'freelook', label = 'Free look (immersive mode)', key = true, def = 'left alt',
       hint = 'Hold to look around while your body stays where it is. Let go and the body turns to catch up. Press RIGHT, then the new key.' },
-    { id = 'peek', label = 'Hold for third person', key = true, def = 'f7',
+    { id = 'peek', label = 'Hold for third person', key = true, def = 'off',
       hint = 'Hold to see the game\'s camera, let go to go back. Press RIGHT, then the new key.' },
+    { id = 'tp_key', label = 'Toggle for third person', key = true, def = 'off',
+      hint = 'Press for the game\'s camera, press again to go back. Press RIGHT, then the new key. DELETE sets none.' },
     { id = 'profile_key', label = 'Next profile', key = true, def = 'off',
       hint = 'Switches to the next of the five profiles. Press RIGHT, then the new key. DELETE sets none.' },
     { id = 'reset_key', label = 'Reset camera', key = true, def = 'off',
@@ -3718,6 +3720,7 @@ local function update_act()
   -- (the ship's arrival kept picking a teammate)
   elseif S.mend then why = 'mission end'
   elseif binds.peek and binds.peek.down() and not S.panel then why = 'peek key'
+  elseif S.tpk_on then why = 'third person key'
   elseif V.tp_galaxy and S.galaxy then why = 'galactic map'
   elseif (S.puse or S.pod) and not pod_landed_fp() then why = 'hellpod'  -- user: the game's own view from using a pod
   elseif S.away and not chef.in_mission() then why = 'game camera away'  -- whatever the settings (the cutscene)
@@ -5001,6 +5004,7 @@ local function step(dt)
     S.keep = nil
   elseif V.start_on and not S.started and S.head then S.started = true; set_on(true) end
   if not busy and binds.toggle and binds.toggle.pressed() then user_toggle() end
+  if not busy and binds.tp_key and binds.tp_key.pressed() then S.tpk_on = not S.tpk_on; log('third person key: %s', S.tpk_on and 'on' or 'off') end
   if not busy then pad_step() end
   if not busy and binds.profile_key and binds.profile_key.pressed() then
     set('profile', V.profile % 5 + 1); apply_hiding(); say('PROFILE ' .. V.profile)
