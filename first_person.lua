@@ -2574,6 +2574,12 @@ function GR.read(fx, fy, fz, dt)
   if st.rld and S.t - st.rld > 0.3 and ((fire and not st.fw) or (S.aim and not st.aw)) then st.rld = nil end
   st.fw, st.aw = fire, S.aim
   local reloading = st.rld and S.t - st.rld < V.reload_hold
+  -- firing: recoil kicks the gun off the camera line, so no reading while the trigger is down and 0.3 s after
+  if fire then st.shot, st.fire_t = st.shot or S.t, S.t
+  elseif st.shot and S.t - st.fire_t > 0.3 then
+    if (st.nlog or 0) < 10 then st.nlog = (st.nlog or 0) + 1; log('firing: gun distance held %.1f s at %.0f m', S.t - st.shot, st.cur or V.aim_dist) end
+    st.shot = nil
+  end
   local pf = st.f
   if pf and dt > 0 and math.deg(math.acos(max(-1, min(1, pf[1] * fx + pf[2] * fy + pf[3] * fz)))) / dt > 40 then st.turn = S.t end
   st.f = { fx, fy, fz }
@@ -2597,7 +2603,7 @@ function GR.read(fx, fy, fz, dt)
   local px, py, pz = ox - al * lx, oy - al * ly, oz - al * lz
   if px * px + py * py + pz * pz > 0.04 or abs(al) > 0.8 then st.calm = nil; return end
   st.calm = st.calm or S.t
-  if S.t - st.calm < 0.1 or reloading or chef.key_down('left ctrl') or S.t - (st.turn or -9) < 0.25 then return end
+  if S.t - st.calm < 0.1 or reloading or st.shot or chef.key_down('left ctrl') or S.t - (st.turn or -9) < 0.25 then return end
   -- the gun's direction in the camera's frame, smoothed twice: quick (0.25 s) for the distance, slow (0.8 s) to tell
   -- a lasting angle (a wall) from the idle sway, which swings to and fro around the true direction
   local cl = sqrt(fx * fx + fy * fy)
