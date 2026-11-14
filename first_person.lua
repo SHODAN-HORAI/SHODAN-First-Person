@@ -121,6 +121,8 @@ local TABS = {
       hint = 'While you sprint, the view leans up to this far into turns and sideways runs. Never while aiming, lying or in a seat. Your aim stays exact.' },
     { id = 'tilt_dive', label = 'Sideways dive tilt', min = 0, max = 10, step = 0.5, def = 4, unit = ' deg', zero = 'OFF',
       hint = 'A dive to the side leans the view this far toward it while you fly, then levels out as you land.' },
+    { id = 'sprint_fov', label = 'Sprint zoom-out', min = 0, max = 15, step = 1, def = 8, unit = ' deg', zero = 'OFF',
+      hint = 'While you sprint, the view widens by this much and eases back as soon as you slow down. Never while aiming, lying or in a seat.' },
     { head = 'SWITCHING' },
     { id = 'blend', label = 'Glide time', min = 0, max = 1, step = 0.05, def = 0.25, unit = ' s', zero = 'OFF',
       hint = 'How long the view glides between first person and the game camera (peek, seats, terminals, the toggle key). Death, the hellpod and cutscenes always cut.' },
@@ -4248,7 +4250,7 @@ function HUD.lean(dt)
   local ok = S.act and S.head and hl > 0.2 and dt > 0
     and not (S.aim or S.scoped or S.down or S.dead or S.dying or S.pod or S.getup or S.stance == 'prone'
       or S.frv or S.mech or S.empl or S.tank or S.gator or S.pel)
-  local want = 0
+  local want, spr = 0, 0
   if ok then
     local rx, ry = c.fy / hl, -c.fx / hl   -- the view's right, level
     local vx, vy = S.vx or 0, S.vy or 0
@@ -4258,7 +4260,8 @@ function HUD.lean(dt)
     S.thd = hd
     S.tyr = (S.tyr or 0) + (yr - (S.tyr or 0)) * (1 - exp(-dt / 0.15))
     local sp = min(1, max(0, (spd - 3.8) / 0.6))
-    want = V.tilt * sp * max(-1, min(1, (vx * rx + vy * ry) / 5 - S.tyr / 120))
+    spr = sp
+    want = V.tilt * sp *max(-1, min(1, (vx * rx + vy * ry) / 5 - S.tyr / 120))
     if S.diving == 'dive_hide_side' and S.fall and V.tilt_dive > 0 then
       if not S.tdv then
         S.tdv, S.tds = S.t, S.fall[1] * rx + S.fall[2] * ry > 0 and 1 or -1
@@ -4271,6 +4274,10 @@ function HUD.lean(dt)
   -- one log line per lean: its biggest, once it levels again
   if abs(S.tilt) > 0.3 then S.tmax = max(S.tmax or 0, abs(S.tilt))
   elseif S.tmax then log('sprint tilt: leaned up to %.1f deg', S.tmax); S.tmax = nil end
+  -- Sprint zoom-out: the same sprint share, eased; the field of view code adds V.sprint_fov times it
+  S.spr = (S.spr or 0) + (spr - (S.spr or 0)) * (1 - exp(-dt / 0.25))
+  if S.spr > 0.05 then S.sprmax = max(S.sprmax or 0, S.spr)
+  elseif S.sprmax then log('sprint zoom-out: up to %.1f deg wider', S.sprmax * V.sprint_fov); S.sprmax = nil end
 end
 -- Knockdown daze (CAMERA tab, DEATH): being thrown blurs and darkens the screen at once, holds 0.4 s and clears by
 -- 1.8 s. The game's own blur strength (the death effect raises it, this doesn't). A death takes over at once.
@@ -5072,6 +5079,11 @@ local function step(dt)
   if S.act and S.term and V.term_fov ~= 0 and not V.tp_term then
     local b0 = want > 0 and want or S.ghip or S.gfov
     if b0 then want = max(10, min(150, b0 + V.term_fov)) end
+  end
+  -- Sprint zoom-out (HUD.lean eases S.spr to 0 while aiming, lying or seated, so it only widens a sprint on foot)
+  if S.act and V.sprint_fov > 0 and (S.spr or 0) > 0.01 then
+    local b0 = want > 0 and want or S.ghip or S.gfov
+    if b0 then want = min(150, b0 + V.sprint_fov * S.spr) end
   end
   -- (nothing written yet at Field of view GAME: the zoom starts from the game's own, not in one jump)
   local from = S.fv or (S.act and V.fov == 0 and vf == 0 and S.gfov)
