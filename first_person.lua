@@ -1354,14 +1354,17 @@ local function drop_seen() return S.drop_t and S.t - S.drop_t < 30 end
 local function others_here() return chef.in_mission() and (chef.players and chef.players() or 1) > 1 end
 
 -- which Helldiver is yours, by where the game's camera sits (numbers measured in game): the game's third-person
--- camera keeps your head 3.2 m in front of it, the camera 0.55 m to the head's right. Score = metres off that spot
--- (sideways counts 1.5x); also the distance, how far right, and how straight ahead the head is (1 = dead ahead)
+-- camera keeps your head 3.2 m in front of it, the camera 0.55 m to the head's right; on the ship much closer, 1.3 m
+-- and 0.67 m (2026-11-13 logs: 10 kept ship picks 1.2-1.5 m, 0.56-0.78 m; the 3.2 m spot took a teammate walking
+-- ~2 m ahead of you, score 0.25). Score = metres off that spot (sideways counts 1.5x); also the distance, how far
+-- right, and how straight ahead the head is (1 = dead ahead)
 local function cam_fit(g, hx, hy, hz)
   local dx, dy, dz = hx - g.x, hy - g.y, hz - g.z
   local d, hl = sqrt(dx * dx + dy * dy + dz * dz), sqrt(g.fx * g.fx + g.fy * g.fy)
   if d < 0.05 or hl < 1e-3 then return nil end
   local r = (dy * g.fx - dx * g.fy) / hl
-  return abs(d - 3.2) + 1.5 * abs(r - 0.55), d, r, (dx * g.fx + dy * g.fy + dz * g.fz) / d
+  local mis = chef.in_mission()
+  return abs(d - (mis and 3.2 or 1.3)) + 1.5 * abs(r - (mis and 0.55 or 0.67)), d, r, (dx * g.fx + dy * g.fy + dz * g.fz) / d
 end
 
 -- the best fit is yours when it clearly is: within 2.5 of the spot and 0.8 ahead of the next (0.4 when under 1.0).
