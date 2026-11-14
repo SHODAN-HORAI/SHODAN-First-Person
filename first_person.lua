@@ -480,7 +480,7 @@ local TABS = {
   { name = 'KEYS', rows = {
     { head = 'FIRST PERSON' },
     { id = 'toggle', label = 'First person on/off', key = true, def = 'f6', hint = 'Press RIGHT, then the new key. DELETE sets none.' },
-    { id = 'freelook', label = 'Hold for free look', key = true, def = 'left alt',
+    { id = 'freelook', label = 'Hold for free look', key = true, def = 'x',
       hint = 'Hold to look around while your gun keeps aiming where it was. Let go and the view swings back. Press RIGHT, then the new key.' },
     { id = 'fl_max', label = 'Free look: furthest turn', min = 15, max = 180, step = 5, def = 75, unit = ' deg',
       hint = 'How far free look turns to each side. 180 = all the way round, so you can look behind you.' },
