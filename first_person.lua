@@ -2212,11 +2212,16 @@ local function target(dt)
           if finite(cx) and finite(cy) then S.bkseat = S.frv; log('FRV look back: %s seat, body vs car facing %.2f', S.frv, bfx * cx + bfy * cy) end
         end
       else
-      local m, sp = S.bkm, nil
-      if m and S.t - m.t > 0.02 and S.t - m.t < 0.3 then sp = ((rx - m.x) * hx_ + (ry - m.y) * hy_) / (S.t - m.t) end
+      local m, sp, ss = S.bkm, nil, nil
+      if m and S.t - m.t > 0.02 and S.t - m.t < 0.3 then
+        sp = ((rx - m.x) * hx_ + (ry - m.y) * hy_) / (S.t - m.t)
+        ss = ((rx - m.x) * hy_ - (ry - m.y) * hx_) / (S.t - m.t)
+      end
       if not m then m = {}; S.bkm = m end
       if not m.t or S.t - m.t > 0.02 then m.x, m.y, m.t = rx, ry, S.t end
-      if not S.bkon then bk_on = facing < -0.15 and sp ~= nil and sp < -1.8
+      -- sideways too: A/D while looking back turns the body across the view (crouched it clipped, user 2026-11-13)
+      if not S.bkon then bk_on = facing < -0.15 and sp ~= nil and (sp < -1.8 or abs(ss) > 1.8)
+        if bk_on then log('walking backward: %.1f m/s toward the camera, %.1f m/s sideways (%s)', -sp, abs(ss), S.stance or 'stand') end
       else bk_on = facing <= 0.45 end
       end
     end
@@ -2229,19 +2234,17 @@ local function target(dt)
   S.bkon = bk_on
   do
     local along = S.sm[1] * fx / hl + S.sm[2] * fy / hl
-    local st = 4 * dt
+    -- glides there over 0.4 s, eased at both ends (4 m/s was a snap: FRV user 2026-11-11, on foot 2026-11-13)
+    S.bkw = max(0, min(1, (S.bkw or 0) + (bk_on and dt or -dt) / 0.4))
+    local e = S.bkw * S.bkw * (3 - 2 * S.bkw)
     if S.frv then
-      -- an FRV slides its own fixed distance (the on-foot 0.39 m from the root put the passenger into the seat) and
-      -- glides there over 0.4 s, eased at both ends (4 m/s was a snap, user 2026-11-11). Its Height adds
-      S.bkw = max(0, min(1, (S.bkw or 0) + (bk_on and dt or -dt) / 0.4))
-      local e = S.bkw * S.bkw * (3 - 2 * S.bkw)
+      -- an FRV slides its own fixed distance (the on-foot 0.39 m from the root put the passenger into the seat). Its Height adds
       S.bk, S.bkf, S.bkh = e * (V[fp .. 'frv_back_fwd'] or 0), 0, e * (V[fp .. 'frv_back_up'] or 0)
     else
-      S.bkw = 0
-      S.bk = ease_to(S.bk or 0, bk_on and min(0.54, max(0, 0.39 - along)) or 0, st)
+      S.bk = e * min(0.54, max(0, 0.39 - along))
       -- its own Forward and Height replace the normal ones while slid (SAME keeps them), eased like the slide
-      S.bkf = ease_to(S.bkf or 0, bk_on and not at_top('back_fwd') and V.back_fwd - V.fwd or 0, st)
-      S.bkh = ease_to(S.bkh or 0, bk_on and not at_top('back_up') and V.back_up - V.up or 0, st)
+      S.bkf = e * (at_top('back_fwd') and 0 or V.back_fwd - V.fwd)
+      S.bkh = e * (at_top('back_up') and 0 or V.back_up - V.up)
     end
     cl = cl + S.bk / hl
     f, up = f + S.bkf, up + S.bkh
@@ -2291,7 +2294,11 @@ local function target(dt)
     -- go 1-2 s after landing (log 2026-11-11); it settles there during the landing instead
     if not p.hold and S.stance == 'stand' and S.t - (S.air_t or -9) > 0.5 then p.zs = p.zs and p.zs + (z - p.zs) * (1 - exp(-dt / 0.3)) or z end
     local held = p.hold and (p.zs and p.z > p.zs and p.zs + (p.z - p.zs) * exp(-dt / 0.2) or p.z)
-    z = max(z, held or p.z - (S.diving and 8 or 2) * dt)
+    local zc = max(z, held or p.z - (S.diving and 8 or 2) * dt)
+    -- each dip the view stays above, logged once at its end (the gun dips with the body, so it drops on screen)
+    if zc - z > 0.03 then p.dip = max(p.dip or 0, zc - z)
+    elseif p.dip then log('view kept above a head dip: up to %.2f m%s', p.dip, p.hold and ' (landing hold)' or ''); p.dip = nil end
+    z = zc
   else p = { hm = hh }; S.vh = p end
   p.z, p.t, p.hh = z, S.t, hh
   S.tz = rz + z
