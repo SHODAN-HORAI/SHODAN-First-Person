@@ -381,10 +381,14 @@ local TABS = {
     { head = 'MECH' },
     { id = 'cockpit_look', global = true, label = 'Cockpit', min = 1, max = 2, step = 1, def = 1, names = { 'GLASS', 'FULLY CLEAR' },
       hint = 'Every exosuit, with the Glass cockpit option ticked in Arsenal: while you sit in it the cockpit turns to glass (GLASS) or is not there at all (FULLY CLEAR).' },
-    { id = 'glass_shield', global = true, label = 'Glass shield (Breakthrough)', toggle = true, def = true,
-      hint = 'With the Glass cockpit option ticked in Arsenal: while you sit in a Breakthrough its shield turns to the same glass as the cockpit, so you see through it.' },
+    { id = 'cockpit_glass', global = true, label = 'Cockpit glass', min = 1, max = 2, step = 1, def = 1, names = { 'CLEARER', 'HARSHER' },
+      hint = 'How the cockpit glass looks: CLEARER = a light see-through glass, HARSHER = the game glass (stronger shine and haze). Takes up to 2 seconds.' },
     { id = 'mech_pick', global = true, label = 'Mech model to edit', min = 1, max = #MECHS, step = 1, def = 1,
       hint = 'Pick the exosuit the mech rows below change. Each exosuit keeps its own settings.' },
+    { id = 'glass_shield', global = true, label = 'Glass shield', toggle = true, def = true,
+      hint = 'With the Glass cockpit option ticked in Arsenal: while you sit in a Breakthrough its shield turns to the same glass as the cockpit, so you see through it.' },
+    { id = 'shield_glass', global = true, label = 'Shield glass', min = 1, max = 2, step = 1, def = 1, names = { 'CLEARER', 'HARSHER' },
+      hint = 'How the Breakthrough shield glass looks: CLEARER = a light see-through glass, HARSHER = the game glass (stronger shine and haze). Takes up to 2 seconds.' },
     { id = 'tp_mech', label = 'Third person in a mech', toggle = true, def = false,
       hint = 'Switches to the game\'s camera while you pilot an exosuit. Off = first person with the offsets below.' },
     { id = 'mech_fov', label = 'Field of view', min = 0, max = 120, step = 1, def = 0, unit = ' deg', zero = 'SAME',
@@ -553,7 +557,8 @@ end
 local PICKS = {
   frv_pick = { models = FRVS, match = function(id) return id:match('^frv[pg]?_') end,
     skip = function(f, r) return f.nogun and (r.head == 'GUNNER' or (r.id or ''):match('^frvg_')) end },
-  mech_pick = { models = MECHS, match = function(id) return id == 'tp_mech' or id:match('^mech_') end },
+  mech_pick = { models = MECHS, match = function(id) return id == 'tp_mech' or id:match('^mech_') end,
+    skip = function(f, r) return f.name ~= 'BREAKTHROUGH' and (r.id == 'glass_shield' or r.id == 'shield_glass') end },
   empl_pick = { models = EMPLS, match = function(id) return id == 'tp_empl' or id:match('^empl_') end },
 }
 for pid, pk in pairs(PICKS) do
@@ -3730,8 +3735,29 @@ end
 -- spawns shown). By number: the game doesn't know them by name (1.2.63). No material swaps: the game's shadow material
 -- set at runtime drew flat cyan (1.2.64).
 -- The Breakthrough's shield arm (same patch) the same way: its plate = mesh 14, glass copy = 15 (row Glass shield).
-local GLASS = { panels = 9, glass = 10, what = 'glass cockpit' }
-HUD.SHIELD = { panels = 14, glass = 15, what = 'glass shield', kind = '65489809a8181b96' }
+local GLASS = { panels = 9, glass = 10, what = 'glass cockpit', strength = 'cockpit_glass' }
+HUD.SHIELD = { panels = 14, glass = 15, what = 'glass shield', kind = '65489809a8181b96', strength = 'shield_glass' }
+-- glass rows (Cockpit glass / Shield glass): 1 CLEARER = our copy of the game's plain see-through shader
+-- (standard_transparent, opacity 0.03: glass_cockpit.py OPAQ), 2 HARSHER = the built glass (base_glass: its refraction look
+-- has no value to lower, 2.1.12c), swapped onto the glass slot only when the row or the unit changes. Values set on a
+-- material at runtime never reach the screen (2.1.9-2.1.11). Ids are made fresh each time: one kept from an earlier frame
+-- ends the game. standard_transparent has no skinned version (2.1.12d sat in the rest pose), so the glass meshes are rigid
+-- on the cockpit / shield bone (2.1.12f, confirmed in game; the user then kept only these two of the 0-100 steps).
+-- TRANSP = that shader, CLEARER swapped in only while it's loaded.
+HUD.TRANSP = '84d1f2c7e35cad5e'
+HUD.GLASS_MAT = { 'be9de2992cef2342', '363ae2fcdfdef63e' }
+function HUD.glass_strength(u, G)
+  local v = V[G.strength]
+  if G.str_u == u and G.str_v == v then return end
+  G.str_u, G.str_v = u, v
+  local hex = HUD.GLASS_MAT[v] or HUD.GLASS_MAT[2]
+  local id = call('IdString64.from_hex', hex)
+  local loaded = id and call('Application.can_get', 'material', id) == true
+  if loaded and v == 1 then loaded = call('Application.can_get', 'material', call('IdString64.from_hex', HUD.TRANSP)) == true end
+  local slot, why = call('Mesh.material_slot_id', call('Unit.mesh', u, G.glass), 1)
+  local res = loaded and slot and (select(2, call('Unit.set_material', u, slot, id)) or 'ok') or 'skipped'
+  log('%s strength %d: material %s %s, slot %s, swap %s', G.what, v, hex, loaded and 'loaded' or 'NOT LOADED', tostring(slot or why), tostring(res))
+end
 function HUD.glass(u, on, quiet, G)
   if not u then return end
   G = G or GLASS
@@ -3745,6 +3771,7 @@ function HUD.glass(u, on, quiet, G)
   local b
   if not a and on then b = select(2, call('Unit.set_mesh_visibility', u, G.panels, false, 'default')) end
   if not a and (clear or not on) then b = b or select(2, call('Unit.set_mesh_visibility', u, G.glass, false, 'default')) end
+  if show == G.glass and not a then HUD.glass_strength(u, G) end
   local line = string.format('%s %s (%s, %s; glass drawn: %s)', G.what, on and (clear and 'fully clear' or 'on') or 'off',
     a and 'show refused: ' .. tostring(a) or show and 'shown' or 'nothing shown', a and 'nothing hidden' or b and 'hide refused: ' .. tostring(b) or 'hidden',
     tostring(call('Mesh.visibility', call('Unit.mesh', u, G.glass))))
