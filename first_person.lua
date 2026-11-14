@@ -241,13 +241,6 @@ local TABS = {
       hint = 'Move the view left (minus) or right while you lie down.' },
     { id = 'prone_fov', label = 'Field of view', min = 0, max = 120, step = 1, def = 0, unit = ' deg', zero = 'SAME',
       hint = 'Up-down view angle while you lie down. SAME = the normal field of view.' },
-    { head = 'STATIONARY RELOAD' },
-    { id = 'srl_fwd', label = 'Forward', min = -0.4, max = 0.4, step = 0.01, def = 0, unit = ' m',
-      hint = 'Extra forward or back while you reload a support weapon that holds you in place (Autocannon, Recoilless, Spear, Airburst, WASP), standing or crouched. Eases in and out.' },
-    { id = 'srl_up', label = 'Height', min = -0.4, max = 0.4, step = 0.01, def = 0, unit = ' m',
-      hint = 'Extra height during that reload.' },
-    { id = 'srl_side', label = 'Sideways', min = -0.6, max = 0.6, step = 0.01, def = 0, unit = ' m',
-      hint = 'Move the view left (minus) or right during that reload.' },
     { head = 'DIVING' },
     { id = 'dive_hide', label = 'Hide collar and shoulders: forward', toggle = true, def = true,
       hint = 'Hides the neck, body and shoulder armour from the start of a forward dive until you stand up, so the view is not inside the collar.' },
@@ -271,6 +264,13 @@ local TABS = {
       hint = 'While you get up, the view stays at least this far in front of your body, the way you look, so you never see your own back.' },
     { id = 'getup_lift', label = 'Lift while getting up', min = 0, max = 0.6, step = 0.05, def = 0.45, unit = ' m',
       hint = 'Raises the view this much while you get up, eased in and out, so it stays over your shoulders.' },
+    { head = 'STATIONARY RELOAD' },
+    { id = 'srl_fwd', label = 'Forward', min = -0.4, max = 0.4, step = 0.01, def = 0.32, unit = ' m',
+      hint = 'Extra forward or back while you look behind you during a support weapon reload that holds you in place, standing or crouched. Grows as you turn past your side.' },
+    { id = 'srl_up', label = 'Height', min = -0.4, max = 0.4, step = 0.01, def = 0.04, unit = ' m',
+      hint = 'Extra height during that reload.' },
+    { id = 'srl_side', label = 'Sideways', min = -0.6, max = 0.6, step = 0.01, def = 0, unit = ' m',
+      hint = 'Move the view left (minus) or right during that reload.' },
     { head = 'LYING DOWN' },
     { id = 'eyes', label = 'View from past the head when down', toggle = true, def = false,
       hint = 'While diving or lying, the view sits just past the top of your head, following the animation, so it stays out of your body.' },
@@ -2225,7 +2225,13 @@ local function target(dt)
   local srl = S.srl and S.act and not (S.frv or S.mech or S.empl or S.tank or S.gator or S.pel) or false
   S.srlw = max(0, min(1, (S.srlw or 0) + (srl and dt or -dt) / 0.25))
   if S.srlw > 0 then
-    local e = S.srlw * S.srlw * (3 - 2 * S.srlw)
+    -- only while looking back (user 2026-11-14): none up to 90 deg off the body's facing, full from 120 deg
+    local bfx, bfy
+    if S.head then bfx, bfy = chef.unit_rotation(S.head.u) end
+    local fc = bfx and bfy and finite(bfx) and finite(bfy) and (bfx * fx + bfy * fy) / hl or 1
+    local b = max(0, min(1, -fc / 0.5))
+    if (b > 0) ~= (S.srlb or false) then S.srlb = b > 0; log('stationary reload: looking back %s (facing %.2f)', S.srlb and 'on' or 'off', fc) end
+    local e = S.srlw * S.srlw * (3 - 2 * S.srlw) * b * b * (3 - 2 * b)
     f, up, sd = f + e * V.srl_fwd, up + e * V.srl_up, sd + e * V.srl_side
   end
   -- the ballistic shield in your hand (seen in a hand within 0.3 s); its window view is set at the end
@@ -4836,9 +4842,11 @@ local function seat_layer_step(dt)
   if L then S.l14, S.l14_t = L[14], S.t
   elseif S.l14_t and S.t - S.l14_t > 1 then S.l14, S.l14_t = nil, nil end
   -- stationary reload (STATIONARY RELOAD offsets), layer 11 (avatar_states.txt layer 10), standing or crouched: 688
-  -- Recoilless, 689 Airburst, 690/691 Autocannon (normal/fast), 718 Spear, 719 WASP (log 2026-11-13). Prone ones (268, 269, 274, 275, 302) left out
+  -- Recoilless, 689 Airburst, 690/691 Autocannon (normal/fast), 718 Spear, 719 WASP (log 2026-11-13), 655/656 MG-206 HMG (log 2026-11-14),
+  -- 665/666 MG-43 (reload_mg), 685 Epoch (reload_plasmablaster). Prone ones (235, 236, 245, 246, 265, 268, 269, 274, 275, 302) left out
   local l11 = L and L[11]
-  local srl = l11 == 688 or l11 == 689 or l11 == 690 or l11 == 691 or l11 == 718 or l11 == 719
+  local srl = l11 == 655 or l11 == 656 or l11 == 665 or l11 == 666 or l11 == 685 or l11 == 688 or l11 == 689 or l11 == 690 or l11 == 691
+    or l11 == 718 or l11 == 719
   if srl ~= (S.srl or false) then S.srl = srl; log('stationary reload %s (layer 11 = %s)', srl and 'start' or 'end', tostring(l11)) end
   local l14 = type(S.l14) == 'number' and S.l14 or -1
   S.tl14 = L14.TANK[l14]
