@@ -1220,7 +1220,7 @@ function hide_guns()
     refs.left, refs.right = refs.attach_hand_l, refs.attach_hand_r
     local rx, ry, rz = upos(d)
     if not rx then return end  -- no position this frame (NaN): the guns as they are, not all shown at once
-    local parts, carried = {}, {}
+    local parts, carried, moved = {}, {}, false
     for _, it in ipairs(rx and gun_watch.items or {}) do
       if (it.x - rx) ^ 2 + (it.y - ry) ^ 2 < 100 and chef.unit_alive(it.unit) then  -- the list's spots are up to 1 s old
         local g = GUNS[it.kind]
@@ -1228,8 +1228,9 @@ function hide_guns()
         local p = x and { x, y, z }
         local st = S.gst[it.unit] or {}
         S.gst[it.unit] = st
-        if g[1] == 'magazine' or g[1] == 'attachment' then parts[#parts + 1] = { u = it.unit, p = p, list = g[2] }
+        if g[1] == 'magazine' or g[1] == 'attachment' then parts[#parts + 1] = { u = it.unit, p = p, list = g[2], k = it.kind }
         elseif p then
+          local was = st.state
           local on = hung_on(it.unit, p, nodes)
           local left = on == 'attach_hand_l' or dist(p, refs.left) < 0.002
           if left or on == 'attach_hand_r' or dist(p, refs.right) < 0.002 then
@@ -1246,12 +1247,13 @@ function hide_guns()
             -- 2026-11-13: measured by distance it passed as stowed and flashed)
             elseif not (on == false and st.state == 'held') then st.state = nil end
           end
+          if st.state ~= was then moved = true end
           if st.state then
             -- the FRV driver keeps the held gun in the right hand on the wheel, where it clips: hidden while driving
             local on = V['hide_' .. st.state .. '_' .. g[1]] or (st.state == 'held' and S.frv == 'driver')
-            carried[#carried + 1] = { p = p, on = on }
+            carried[it.unit] = { p = p, on = on, what = st.state .. ' ' .. g[1] }
             if on then want[it.unit] = g[2] end
-          else parts[#parts + 1] = { u = it.unit, p = p, list = g[2] } end  -- a scope or sight that is its own unit
+          else parts[#parts + 1] = { u = it.unit, p = p, list = g[2], k = it.kind } end  -- a scope or sight that is its own unit
           local said = (st.state or 'not yours') .. (on and ' on ' .. on or on == false and ' on another node' or '')
           if said ~= S.gsaid[it.unit] then
             S.gsaid[it.unit] = said
@@ -1260,10 +1262,20 @@ function hide_guns()
         end
       end
     end
-    -- magazines, scopes, muzzles, launchers: they go with the nearest gun you carry within 0.8 m
+    -- magazines, scopes, muzzles, launchers: they go with the nearest gun you carry within 0.8 m, and keep that gun
+    -- while their distance to it holds (mounted on it): scoped in, the raised rifle's scope came nearer the support
+    -- weapon on your back than its own gun's root and flashed with the stowed support's hiding (2026-11-14).
+    -- Any gun taken out or put away: all matched afresh, so one lent to the backpack mid-swap comes home
     for _, m in ipairs(parts) do
-      local best, bd = nil, 0.8
-      for _, c in ipairs(carried) do local dd = dist(m.p, c.p); if dd < bd then best, bd = c, dd end end
+      local st = S.gst[m.u]
+      local best = not moved and st.with and carried[st.with]
+      if not (best and abs(dist(m.p, best.p) - st.wd) < 0.005) then
+        local was, bd = st.with, 0.8
+        best, st.with = nil, nil
+        for u, c in pairs(carried) do local dd = dist(m.p, c.p); if dd < bd then best, bd, st.with = c, dd, u end end
+        st.wd = bd
+        if st.with ~= was and st.with then log('part %s goes with your %s (%.2f m)', m.k, best.what, bd) end
+      end
       if best and best.on then want[m.u] = m.list end
     end
   end
