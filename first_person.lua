@@ -4459,7 +4459,7 @@ local function draw_panel(dt)
   local list = rows()
   local rows_h = 0
   for _, r in ipairs(list) do rows_h = rows_h + (r.head and HH or RH) end
-  -- long tabs scroll: show what fits on screen, keep the selected row in view, the wheel scrolls off the sliders
+  -- long tabs scroll: show what fits on screen, keep the selected row in view, the wheel only scrolls (never changes a setting)
   local fit = min(rows_h, sh - floor(60 * s) - HEAD - TABH - FOOT - floor(16 * s))
   local top = 0
   for i, r in ipairs(list) do
@@ -4524,7 +4524,6 @@ local function draw_panel(dt)
   -- rows
   local track_w = floor(200 * s)
   local ry = tby - floor(8 * s) + P.scroll
-  local over_slider = false
   for i, r in ipairs(list) do
     local rx, rw = x0 + floor(12 * s), W - floor(24 * s)
     ry = ry - (r.head and HH or RH)
@@ -4607,7 +4606,6 @@ local function draw_panel(dt)
           if P.drag == r.id then
             if click then set(r.id, r.min + max(0, min(1, (P.cx - bx) / track_w)) * (r.max - r.min)) else P.drag = nil end
           end
-          if hover and not P.wlist then over_slider = true; local wv = chef.wheel(); if wv and wv ~= 0 then change(r, wv > 0 and 1 or -1) end end
         end
       end
     end
@@ -4664,7 +4662,7 @@ local function draw_panel(dt)
     chef.rect(sbx, tt - th, sbw, th, P.wdrag and Y() or Y(150), L + 32)
     if P.wlist and lpress and not inlist and not hit(P.wbox[1], P.wbox[2], P.wbox[3], P.wbox[4]) then P.wlist = false end
   end
-  if rows_h > fit and not over_slider and not P.wlist and hit(x0, tby - fit, W, fit) then
+  if rows_h > fit and not P.wlist and hit(x0, tby - fit, W, fit) then
     local wv = chef.wheel(); if wv and wv ~= 0 then P.scroll = max(0, min(rows_h - fit, P.scroll - wv * RH)) end
   end
   -- scrollbar in the right margin: drag the thumb, or click the track to jump there
