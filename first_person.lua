@@ -2422,6 +2422,7 @@ end
 local RB_FROM, RB_DIR = {}, {}
 local function aim_range(G, dx, dy, dz)
   if not (enemy_watch and chef.ray_box) then return nil, 'no enemy list' end
+  if enemy_watch.generation == S.ew_gen then return nil, 'enemy list coming' end  -- the list from before a pause: stale units
   local from, dir = RB_FROM, RB_DIR
   from.x, from.y, from.z, dir.x, dir.y, dir.z = G[1], G[2], G[3], dx, dy, dz
   local cone = math.rad(V.aim_cone)
@@ -2459,6 +2460,14 @@ end
 -- the crosshair fix makes goes with 1/distance, so every change looks the same speed (paced in meters, 100 to
 -- 10 m would crawl at the start and rush at the end).
 local GR = { st = {} }
+-- the enemy list only while something ranges on it (the loader asks the engine for every enemy kind each second)
+function GR.watch()
+  if not enemy_watch then return end
+  local need = (V.aim_range or V.hip_range or S.mech) and true or false
+  if need == enemy_watch.active then return end
+  if need then enemy_watch.resume(); S.ew_gen = enemy_watch.generation else enemy_watch.pause() end
+  log('enemy list %s', need and 'on' or 'paused (nothing ranges on it)')
+end
 function GR.range_of(d, mn) return d < 15.8 and mn or (d < 37 and 25 or (d < 70 and 50 or 100)) end
 -- one reading along the game's line from (S.gcx, S.gcy, S.gcz): meters, 100 (the lines parallel: far), or nil
 function GR.read(fx, fy, fz, dt)
@@ -3089,7 +3098,8 @@ local function place(w)
     if l > 1e-4 and mx then mfx, mfy = mfx / l, mfy / l else mfx = nil end
   end
   for ci, k in ipairs(S.cams) do
-    local cam = cam_of(k)
+    -- a camera the game never moves, already put back: nothing more to read (41 of them on the ship, every pass)
+    local cam = (not k.static or k.wx) and cam_of(k) or nil
     -- the game's own pose this frame (unless it's still ours from last frame): skip a camera the game already put at
     -- the head (its scope) or one far away (linked to something, so a world position would fling it)
     local cx, cy, cz = xyz(cam and call('Camera.local_position', cam))
@@ -4976,6 +4986,7 @@ local function step(dt)
     S.fv = S.fv + (S.gfov - S.fv) * (1 - exp(-dt * 14))
     if abs(S.fv - S.gfov) < 0.3 then S.fv = nil end
   else S.fv = nil end
+  GR.watch()
   hide_guns()
   place(w)
   HUD.overlays(dt)
