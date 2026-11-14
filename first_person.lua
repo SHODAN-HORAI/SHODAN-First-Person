@@ -2283,9 +2283,10 @@ local function target(dt)
       end
       if not m then m = {}; S.bkm = m end
       if not m.t or S.t - m.t > 0.02 then m.x, m.y, m.t = rx, ry, S.t end
-      -- sideways too: A/D while looking back turns the body across the view (crouched it clipped, user 2026-11-13)
-      if not S.bkon then bk_on = facing < -0.15 and sp ~= nil and (sp < -1.8 or abs(ss) > 1.8)
-        if bk_on then log('walking backward: %.1f m/s toward the camera, %.1f m/s sideways (%s)', -sp, abs(ss), S.stance or 'stand') end
+      -- sideways too: A/D while looking back turns the body across the view (crouched it clipped, user 2026-11-13).
+      -- Stratagem list out: looking back alone, no speed needed (user 2026-11-14: the slide didn't come with the list up)
+      if not S.bkon then bk_on = facing < -0.15 and (S.strat_open or sp ~= nil and (sp < -1.8 or abs(ss) > 1.8))
+        if bk_on then log('walking backward: %.1f m/s toward the camera, %.1f m/s sideways (%s%s)', -(sp or 0), abs(ss or 0), S.stance or 'stand', S.strat_open and ', stratagem list' or '') end
       else bk_on = facing <= 0.45 end
       end
     end
@@ -3746,7 +3747,7 @@ end
 -- those 0.4 s (on the very frame of the key, then 869/872 once the list is up; 1.0.20 log, every press)
 local function menu_check()
   local h = S.head
-  if not (S.on and V.tp_menus and h and chef.in_mission()) or S.panel or S.frv or S.mech or S.empl or S.tank then
+  if not (S.on and (V.tp_menus or V.back_shift) and h and chef.in_mission()) or S.panel or S.frv or S.mech or S.empl or S.tank then
     S.map_open, S.strat_open = false, false; return
   end
   local st = { anim(h.u, true) }
@@ -3754,7 +3755,7 @@ local function menu_check()
   if st[11] == 636 then S.t636 = S.t end
   local map, strat = st[28] == 5, st[10] == 306 or st[10] == 131 or (S.t636 or -1) > S.t - 0.15
   if map ~= (S.map_open or false) then S.map_open = map; log('map %s', map and 'out' or 'away') end
-  if strat ~= (S.strat_open or false) then S.strat_open = strat; log('stratagem list %s', strat and 'out' or 'away') end
+  if strat ~= (S.strat_open or false) then S.strat_open = strat; log('stratagem list %s (aiming %s, first person %s, %s)', strat and 'out' or 'away', tostring(S.aim or false), tostring(S.act or false), S.stance or 'stand') end
 end
 
 -- each FRV seat's own Third person row (the model's prefix in front)
