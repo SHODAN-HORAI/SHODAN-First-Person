@@ -1146,14 +1146,78 @@ local function gun_meshes(u, list, on)
   -- again every frame: the game shows them again on a swap or reload
   for m in pairs(h) do local key = mesh_key(u, m); if key then call('Unit.set_mesh_visibility', u, key, false, 'default') end end
 end
--- every frame: which of your guns is in a hand (its root on a hand's attach node) or stowed (it rides rigidly with
--- its slot while the slot moves), and hide those the settings ask for, with their magazines
-local function hide_guns()
+local hide_guns
+do
+local LINK_NODES = { 'attach_hand_l', 'attach_hand_r' }
+for _, l in pairs(SLOTS) do for _, n in ipairs(l) do LINK_NODES[#LINK_NODES + 1] = n end end
+-- which of your Helldiver's nodes a gun hangs on, from the engine's own link: a linked unit's root position is kept
+-- relative to the node it hangs on, so that node's spot plus the offset turned with the node is exactly the gun's
+-- spot. The node's name; false = linked to a node not listed (aiming, reloading) or to someone else; nil = loose
+-- a node's right, forward and up axes in the world, read only for a node a gun could hang on, once a frame: from its
+-- quaternion (2 engine calls instead of 7). The first read also asks the 3 axes and compares; a mismatch keeps the axes
+local QAX  -- nil: not compared yet, true: the quaternion matches, false: axes only
+local AXES = { 'Quaternion.right', 'Quaternion.forward', 'Quaternion.up' }
+local function axes(n)
+  if n.a ~= nil then return n.a end
+  n.a = false
+  local q = call('Unit.world_rotation', n.u, n.i)
+  if not q then return false end
+  local a
+  if QAX ~= false then
+    local x, y, z, w = call('Quaternion.to_elements', q)
+    if finite(x) and finite(y) and finite(z) and finite(w) then
+      a = { 1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y),
+            2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x),
+            2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y) }
+    end
+  end
+  if QAX ~= true then
+    local b = {}
+    for _, ax in ipairs(AXES) do
+      local x, y, z = xyz(call(ax, q))
+      if x then b[#b + 1] = x; b[#b + 1] = y; b[#b + 1] = z end
+    end
+    if #b ~= 9 then return false end
+    if QAX == nil and a then
+      local e = 0
+      for i = 1, 9 do e = max(e, abs(a[i] - b[i])) end
+      QAX = e < 1e-3
+      log('gun links: node turn from its quaternion %s (off by up to %.5f)', QAX and 'matches its axes, used from now on' or 'does NOT match its axes, axes kept', e)
+    end
+    a = b
+  end
+  n.a = a or false
+  return n.a
+end
+local function hung_on(u, p, nodes)
+  local lx, ly, lz = xyz(call('Unit.local_position', u, 1))
+  if not lx then once('lpos', 'gun links unreadable: no local position'); return nil end
+  if abs(lx - p[1]) + abs(ly - p[2]) + abs(lz - p[3]) < 1e-4 then return nil end
+  local L = sqrt(lx * lx + ly * ly + lz * lz)
+  for _, n in ipairs(nodes) do
+    -- turning keeps the offset's length: only a node that far from the gun can hold it (most nodes need no axes)
+    local a = abs(dist(p, n.p) - L) < 0.0035 and axes(n)
+    if a then
+      local x = n.p[1] + a[1] * lx + a[4] * ly + a[7] * lz
+      local y = n.p[2] + a[2] * lx + a[5] * ly + a[8] * lz
+      local z = n.p[3] + a[3] * lx + a[6] * ly + a[9] * lz
+      if abs(x - p[1]) + abs(y - p[2]) + abs(z - p[3]) < 0.003 then return n.name end
+    end
+  end
+  return false
+end
+-- every frame: which of your guns is in a hand or stowed (the node it hangs on), and hide those the settings ask
+-- for, with their magazines
+function hide_guns()
   local want = {}
   local d = S.head and S.head.u
   if S.shown and d and gun_watch and chef.unit_alive(d) then
-    local refs = { left = node_at(d, 'attach_hand_l'), right = node_at(d, 'attach_hand_r') }
-    for _, l in pairs(SLOTS) do for _, n in ipairs(l) do refs[n] = refs[n] or node_at(d, n) end end
+    local refs, nodes = {}, {}
+    for _, n in ipairs(LINK_NODES) do
+      refs[n] = node_at(d, n)
+      if refs[n] then nodes[#nodes + 1] = { name = n, p = refs[n], u = d, i = node_ix[d][n] } end  -- axes: on demand
+    end
+    refs.left, refs.right = refs.attach_hand_l, refs.attach_hand_r
     local rx, ry, rz = upos(d)
     if not rx then return end  -- no position this frame (NaN): the guns as they are, not all shown at once
     local parts, carried = {}, {}
@@ -1166,34 +1230,21 @@ local function hide_guns()
         S.gst[it.unit] = st
         if g[1] == 'magazine' or g[1] == 'attachment' then parts[#parts + 1] = { u = it.unit, p = p, list = g[2] }
         elseif p then
-          if dist(p, refs.left) < 0.002 or dist(p, refs.right) < 0.002 then
-            st.state, st.learn = 'held', nil
+          local on = hung_on(it.unit, p, nodes)
+          local left = on == 'attach_hand_l' or dist(p, refs.left) < 0.002
+          if left or on == 'attach_hand_r' or dist(p, refs.right) < 0.002 then
+            st.state = 'held'
             if it.kind == SHIELD_KIND then S.shield_t, S.shu = S.t, it.unit
-            else S.gheld = { u = it.unit, p = p, o = dist(p, refs.left) < 0.002 and refs.right or refs.left, t = S.t } end
+            else S.gheld = { u = it.unit, p = p, o = left and refs.right or refs.left, t = S.t } end
             -- the weapon whose own settings apply (kept with nothing in your hands: a throw doesn't switch them)
             if g[3] and S.wheld ~= it.kind then S.wheld = it.kind; log('weapon in your hands: %s', g[3]) end
           else
-            if st.state == 'held' then st.state = nil end
-            -- rigid on a slot: same distance to it (3 mm) over 3+ samples and 0.1 s while the slot moved 5 cm
-            local ok = false
-            for _, n in ipairs(SLOTS[g[1]]) do
-              local r = refs[n]
-              local dd = dist(p, r)
-              if r and dd < 0.9 then
-                local a = st.learn
-                if st.state == 'stowed' and st.slot == n then ok = abs(dd - st.d) < 0.003
-                elseif not a or a.slot ~= n or abs(dd - a.d) >= 0.003 or S.t - a.last > 0.25 then
-                  st.learn = { slot = n, d = dd, r = r, first = S.t, last = S.t, count = 1 }
-                else
-                  a.last, a.count = S.t, a.count + 1
-                  if a.count >= 3 and S.t - a.first >= 0.1 and dist(r, a.r) > 0.05 then
-                    st.state, st.slot, st.d, ok = 'stowed', n, a.d, true
-                  end
-                end
-                if ok then break end
-              end
-            end
-            if not ok and st.state == 'stowed' then st.state, st.learn = nil, nil end
+            local slot = false
+            for _, n in ipairs(SLOTS[g[1]] or {}) do if n == on then slot = true end end
+            if slot then st.state = 'stowed'
+            -- a held gun linked on to a node not listed stays held: scoping and reloading move it there (the Apex,
+            -- 2026-11-13: measured by distance it passed as stowed and flashed)
+            elseif not (on == false and st.state == 'held') then st.state = nil end
           end
           if st.state then
             -- the FRV driver keeps the held gun in the right hand on the wheel, where it clips: hidden while driving
@@ -1201,9 +1252,10 @@ local function hide_guns()
             carried[#carried + 1] = { p = p, on = on }
             if on then want[it.unit] = g[2] end
           else parts[#parts + 1] = { u = it.unit, p = p, list = g[2] } end  -- a scope or sight that is its own unit
-          if st.state ~= S.gsaid[it.unit] then
-            S.gsaid[it.unit] = st.state
-            log('gun %s (%s): %s', it.kind, g[1], st.state or 'not yours')
+          local said = (st.state or 'not yours') .. (on and ' on ' .. on or on == false and ' on another node' or '')
+          if said ~= S.gsaid[it.unit] then
+            S.gsaid[it.unit] = said
+            log('gun %s (%s): %s', it.kind, g[1], said)
           end
         end
       end
@@ -1217,6 +1269,7 @@ local function hide_guns()
   end
   for u in pairs(S.ghid) do if not want[u] then if chef.unit_alive(u) then gun_meshes(u, nil, false) else S.ghid[u] = nil end end end
   for u, list in pairs(want) do gun_meshes(u, list, true) end
+end
 end
 -- every gun we hid shown again at once (the mod stopping, the reset key, an error): the start-again that follows
 -- forgets S.ghid, and a mesh we hid reads as hidden, so nothing would ever show it again
