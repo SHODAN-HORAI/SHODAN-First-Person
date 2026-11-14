@@ -3334,7 +3334,9 @@ local function game_view_far(x, y, z)
       local near = false
       if cx and not (k.wx and abs(cx - k.wx) + abs(cy - k.wy) + abs(cz - k.wz) < 0.001) then
         known = true
-        near = (cx - x) ^ 2 + (cy - y) ^ 2 + (cz - z) ^ 2 <= 3.5 ^ 2
+        -- mission-end hold: a teammate picked by mistake stands a few metres off the game camera; reading that as away
+        -- would pause cam_confirm, which is what lets the wrong pick go
+        near = (cx - x) ^ 2 + (cy - y) ^ 2 + (cz - z) ^ 2 <= (S.mend and 6 or 3.5) ^ 2
         far = far or not near
       end
       -- a menu with a character preview (armory, Warbonds, Superstore) shows through a narrow camera, near the head
@@ -3530,8 +3532,12 @@ local function pod_landed_fp()
 end
 local function update_act()
   local why
+  if S.mend and S.head and not S.confirm and not chef.in_mission() then S.mend = nil; log('mission end: your Helldiver is sure, first person again') end
   if not S.on then why = 'switched off'
   elseif S.dead then why = 'dead'
+  -- user 2026-11-13: the game's own camera from the mission's outro until your Helldiver is confirmed on the ship
+  -- (the ship's arrival kept picking a teammate)
+  elseif S.mend then why = 'mission end'
   elseif binds.peek and binds.peek.down() and not S.panel then why = 'peek key'
   elseif V.tp_galaxy and S.galaxy then why = 'galactic map'
   elseif (S.puse or S.pod) and not pod_landed_fp() then why = 'hellpod'  -- user: the game's own view from using a pod
@@ -4581,7 +4587,11 @@ local function world_gone()
   end
   S.wgone = nil
   -- (a new world id is the usual world change, which starts fresh by itself without carrying anything over)
-  if S.wsig and sig ~= S.wsig and chef.world_id() == S.world then drop_handles(string.format('the list of worlds changed (%d worlds)', #ws)) end
+  if S.wsig and sig ~= S.wsig and chef.world_id() == S.world then
+    -- in a mission this only ever happens as its outro starts, ~21 s before the summary (all 4 mission ends, 2026-11-13 logs)
+    if chef.in_mission() and S.mend ~= S.world then S.mend = S.world; log('mission end: the outro started, game camera') end
+    drop_handles(string.format('the list of worlds changed (%d worlds)', #ws))
+  end
   S.wsig = sig
   return false
 end
@@ -4700,6 +4710,12 @@ local function step(dt)
       S.body_kept = nil
     end
     S.carry = nil
+    -- mission end hold (update_act): from leaving a mission any way (or its outro, world_gone) until the ship's pick is
+    -- confirmed; a new mission ends it. The outro's restart in the same mission world keeps it
+    local mis = chef.in_mission()
+    if S.wmis and not mis and not S.mend then S.mend = true; log('mission end: left the mission, game camera')
+    elseif mis and S.mend and S.mend ~= S.world then S.mend = nil end
+    S.wmis = mis
   end
   S.t, S.fno = S.t + dt, (S.fno or 0) + 1
   -- the game camera falling 25+ m/s for 0.25 s = a hellpod coming down (a single-frame jump is a camera cut; 12+ m/s
